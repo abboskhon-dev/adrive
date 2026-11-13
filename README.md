@@ -2,6 +2,15 @@
 
 A small Android CLI for inspecting and driving installed apps over adb, including release builds with continuous animations. It reads the accessibility tree without calling `waitForIdle`, then uses Android input commands for actions. No changes to the app under test are required.
 
+Compared with Maestro and other UiAutomator-based tools:
+
+- **Never waits for idle.** Apps with looping animations, audio meters, or live canvases can be read and driven immediately instead of stalling on an idle wait.
+- **Installs nothing on the device.** No driver APK or instrumentation runner; a small dex is pushed to `/data/local/tmp` and run with shell privileges.
+- **Diagnoses release builds.** `perf` (CPU per thread, memory, frame jank), `audio` (track underruns, buffer sizes, output path), `crash`, and per-process `log` all work without a debuggable build.
+- **Keeps accessibility services running.** TalkBack and other services stay active while the tree is read.
+- **Sees other windows.** `--windows` includes the keyboard, system dialogs, and overlays with their Z-order.
+- **One command, one answer.** No YAML, server, or session to manage; text output for reading, `--json` for scripts and agents. No npm dependencies.
+
 ## Setup
 
 Requires Node.js 18+, JDK 17+, Android SDK platform-tools, an SDK platform and build-tools (with `d8`). The helper targets Android 8 / API 26 or newer. Enable USB debugging and authorize your computer on the device.
