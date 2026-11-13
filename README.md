@@ -43,11 +43,12 @@ adrive log 'error|warning' --package com.example.app
 adrive crash --package com.example.app
 adrive perf --package com.example.app
 adrive perf --package com.example.app --reset
+adrive audio --package com.example.app --json
 adrive log-clear
 adrive clear com.example.app # deletes app data and signs out
 ```
 
-Diagnostics default to the focused app. Packages are supplied only with `--package`; a dotted regex is always a regex. `crash` reports the last Java crash matching the exact package or a `package:subprocess`, plus current ANR/crashing state, not historical ANR traces or native tombstones. `log` filters the current main process PID; it does not aggregate subprocesses or logs from previous process instances. `perf` reports Android's available CPU, memory, and gfxinfo counters; gfxinfo does not measure every custom rendering pipeline.
+Diagnostics default to the focused app. Packages are supplied only with `--package`; a dotted regex is always a regex. `crash` reports the last Java crash matching the exact package or a `package:subprocess`, plus current ANR/crashing state, not historical ANR traces or native tombstones. `log` filters the current main process PID; it does not aggregate subprocesses or logs from previous process instances. `perf` reports Android's available CPU, memory, and gfxinfo counters; gfxinfo does not measure every custom rendering pipeline. `audio` reads `dumpsys media.audio_flinger` for the app's current PIDs: live tracks, their output thread, and recently closed tracks that had underrun frames (from AudioFlinger's per-thread local log). Tracks from earlier process instances are not attributed.
 
 Element matching is case-insensitive: exact text, description, or resource ID first, then substring. Full IDs and the short suffix after `/` both work. Clickable matches are preferred within each window. `--nth` is zero-based and supported by `tap`, `longpress`, and `slide`. Missing targets fail before any device action. Use `--` before a target that starts with `--`. `type` treats its arguments as literal text (an initial `--` is an optional delimiter).
 

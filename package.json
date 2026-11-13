@@ -2,6 +2,7 @@
   "name": "adrive",
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
   "bin": {
     "adrive": "adrive.mjs"
   },

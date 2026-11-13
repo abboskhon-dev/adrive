@@ -33,6 +33,7 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   log-clear                      clear logcat, to read only what happens next
   crash [--package pkg]                    last crash / ANR stack traces
   perf [--package pkg] [--reset]           CPU by thread, memory, frame jank since last --reset
+  audio [--package pkg] [--json]           the app's audio tracks: underruns, buffers, output thread
   open <url>                     open a deep link
   clear <pkg>                    wipe app data (signs out)`
 
@@ -181,12 +182,82 @@ function perf(pkg) {
   return `CPU by thread (pid ${p}):\n${threads}\n\nMemory:\n${mem}\n\nFrames:\n${frames || 'no frames rendered'}`
 }
 
+// AudioFlinger column titles that span two whitespace-separated words.
+const SPLIT_TITLES = new Set(['Port Id', 'Chn mask', 'G db', 'L dB', 'R dB', 'VS dB', 'L Vol', 'R Vol'])
+function columns(header) {
+  const out = []
+  for (const word of header.trim().split(/\s+/)) {
+    if (out.length && SPLIT_TITLES.has(`${out.at(-1)} ${word}`)) out[out.length - 1] += ` ${word}`
+    else out.push(word)
+  }
+  return out
+}
+// Rows omit Type for normal tracks, so columns are aligned on the Active yes/no cell.
+function trackRow(line, cols) {
+  const words = line.trim().split(/\s+/)
+  const active = words.findIndex((w) => w === 'yes' || w === 'no')
+  const at = cols.indexOf('Active')
+  if (active < 1 || at < 1) return null
+  const cell = (name) => words[active + cols.indexOf(name) - at]
+  const num = (name) => { const v = Number(cell(name)); return Number.isFinite(v) ? v : null }
+  return { id: num('Id'), active: cell('Active') === 'yes', client: num('Client'), state: cell('S'),
+    flags: cell('Flags'), rate: num('SRate'), frames: num('FrmCnt'), underruns: num('Underruns') }
+}
+function parseAudio(dump, pids) {
+  const threads = []
+  for (const block of dump.split(/^(?=\S.* thread 0x[0-9a-f]+, name )/m)) {
+    const head = block.match(/^(\S+) thread 0x[0-9a-f]+, name (\S+), tid \d+, type \d+ \((\w+)\)/)
+    if (!head) continue
+    const field = (re) => block.match(re)?.[1]
+    const header = block.split('\n').find((l) => /\bActive\b/.test(l) && /\bUnderruns\b/.test(l))
+    const cols = header ? columns(header) : []
+    const tracks = [], history = new Map()
+    let inLog = false
+    for (const line of block.split('\n')) {
+      if (/^\s*Local log:/.test(line)) { inLog = true; continue }
+      if (!cols.length || line === header) continue
+      const event = inLog && line.match(/^\s*(\d\d-\d\d \S+) (\S+)/)
+      if (inLog && !event) continue
+      const row = trackRow(event ? line.slice(line.indexOf(')') + 1) : line, cols)
+      if (!row || row.id === null || !pids.includes(row.client)) continue
+      if (event) history.set(row.id, { ...row, time: event[1], event: event[2] })
+      else tracks.push(row)
+    }
+    if (!tracks.length && !history.size) continue
+    const mixer = block.match(/raw underrun counters: partial=(\d+) empty=(\d+)/)
+    threads.push({ direction: head[1], name: head[2], type: head[3],
+      output: field(/AudioStreamOut: \S+ flags \S+ \(([^)]*)\)/)?.replace(/AUDIO_OUTPUT_FLAG_/g, '') ?? '',
+      standby: field(/Standby: (\w+)/) === 'yes', rate: Number(field(/Sample rate: (\d+)/)) || null,
+      halFrames: Number(field(/HAL frame count: (\d+)/)) || null,
+      delayedWrites: Number(field(/Delayed writes: (\d+)/) ?? 0),
+      mixerUnderruns: mixer ? { partial: +mixer[1], empty: +mixer[2] } : null,
+      tracks, history: [...history.values()] })
+  }
+  return threads
+}
+function formatAudio(pkg, pids, threads) {
+  const ms = (t) => t.rate && t.underruns ? ` (${(t.underruns / t.rate * 1000).toFixed(1)} ms)` : ''
+  const track = (t) => `track ${t.id} ${t.active ? 'active' : 'idle'} ${t.rate} Hz, buffer ${t.frames} frames, flags ${t.flags}, underrun frames ${t.underruns}${ms(t)}`
+  const lines = [`${pkg} pid ${pids.join(',')}`]
+  if (!threads.length) lines.push('no audio tracks from this process')
+  for (const th of threads) {
+    lines.push(`${th.name} ${th.type}${th.output ? ` (${th.output})` : ''} ${th.rate} Hz, HAL ${th.halFrames} frames${th.standby ? ', standby' : ''}`
+      + `, delayed writes ${th.delayedWrites}${th.mixerUnderruns ? `, mixer underruns partial=${th.mixerUnderruns.partial} empty=${th.mixerUnderruns.empty}` : ''}`)
+    for (const t of th.tracks) lines.push(`  ${track(t)}`)
+    const glitched = th.history.filter((t) => t.underruns > 0 && !th.tracks.some((c) => c.id === t.id))
+    if (th.history.length) lines.push(`  history: ${th.history.length} recent tracks, ${glitched.length} closed with underruns`)
+    for (const t of glitched) lines.push(`    ${t.time} ${track(t)}`)
+  }
+  return lines.join('\n')
+}
+
 async function main([cmd, ...raw]) {
   const element = ['tap', 'longpress', 'slide', 'wait', 'gone'].includes(cmd)
   const allowed = element ? { '--windows': false } : {}
   if (['tap', 'longpress', 'slide'].includes(cmd)) allowed['--nth'] = true
   if (cmd === 'ui') Object.assign(allowed, { '--all': false, '--windows': false, '--json': false })
-  if (['log', 'crash', 'perf'].includes(cmd)) allowed['--package'] = true
+  if (['log', 'crash', 'perf', 'audio'].includes(cmd)) allowed['--package'] = true
+  if (cmd === 'audio') allowed['--json'] = false
   if (cmd === 'log') allowed['--lines'] = true
   if (cmd === 'perf') allowed['--reset'] = false
   // Text is literal, including --nth. An initial -- is an optional delimiter.
@@ -293,6 +364,15 @@ async function main([cmd, ...raw]) {
       if (flags['--reset']) return shell('dumpsys', 'gfxinfo', pkg, 'reset')
       return console.log(perf(pkg))
     }
+    case 'audio': {
+      arity(args, 0, 0, 'audio [--package pkg] [--json]')
+      const pkg = pkgArg(flags['--package'])
+      const pids = sh(`pidof ${quote(pkg)}; true`).trim().split(/\s+/).filter((p) => /^\d+$/.test(p)).map(Number)
+      if (!pids.length) throw new Error(`${pkg} is not running`)
+      const threads = parseAudio(shell('dumpsys', 'media.audio_flinger'), pids)
+      if (flags['--json']) return console.log(JSON.stringify({ package: pkg, pids, threads }))
+      return console.log(formatAudio(pkg, pids, threads))
+    }
     case 'open':
       arity(args, 1, 1, 'open <url>')
       return shell('am', 'start', '-a', 'android.intent.action.VIEW', '-d', required(args[0], 'url'))
@@ -305,7 +385,7 @@ async function main([cmd, ...raw]) {
   }
 }
 
-export { main, quote, formatNode }
+export { main, quote, formatNode, parseAudio }
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main(process.argv.slice(2)).catch((e) => {
     console.error(String(e.message).trim())

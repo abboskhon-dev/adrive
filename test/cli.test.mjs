@@ -22,6 +22,7 @@ if (cmd.includes('app_process')) process.stdout.write(process.env.DUMP);
 else if (cmd.includes('md5sum')) process.stdout.write('f16d05ec6b29228d2c61adb1e9263f78  file');
 else if (cmd === "'dumpsys' 'window'") process.stdout.write(process.env.FOCUS);
 else if (cmd.startsWith('pidof ')) process.stdout.write('1234');
+else if (cmd === "'dumpsys' 'media.audio_flinger'") process.stdout.write(process.env.AUDIO || '');
 else if (args[0] === 'logcat') process.stdout.write(process.env.LOGS || 'foo.bar match\\nother\\n');
 `, { mode: 0o755 })
 const node = (fields = {}) => ({ class: 'android.widget.Button', text: 'Delete', desc: '', id: '',
@@ -118,4 +119,25 @@ test('CLI entry point also runs through a symlink', () => {
   const result = spawnSync(process.execPath, [link, 'help'], { encoding: 'utf8' })
   assert.equal(result.status, 0)
   assert.match(result.stdout, /drive any Android app/)
+})
+
+test('audio reports only the app\'s tracks, live and closed with underruns', () => {
+  const header = '    Type     Id Active Client Session Port Id S  Flags   Format Chn mask  SRate ST Usg CT  G db  L dB  R dB  VS dB   Server FrmCnt  FrmRdy F Underruns  Flushed'
+  const row = (id, active, client, under) => `${id}  ${active}  ${client}  3753  339 P  0x400 00000005 00000003  44100  3   1  2  -inf  0  0  0  0195FB40  3848  1928 A  ${under}  0`
+  const AUDIO = ['Output thread 0xb4, name AudioOut_15, tid 1645, type 0 (MIXER):', '  Standby: no', '  Sample rate: 48000 Hz',
+    '  AudioStreamOut: 0xb4 flags 0x8 (AUDIO_OUTPUT_FLAG_DEEP_BUFFER)', '  Normal mixer raw underrun counters: partial=1 empty=2',
+    '  2 Tracks of which 1 are active', header, '            ' + row(317, 'yes', 1234, 0), '            ' + row(318, 'no', 999, 50),
+    '  Local log:', '   11-13 08:25:37.718 removeTrack_l (0xb4)  ' + row(454, 'no', 1234, 2530),
+    '   11-13 08:25:38.000 removeTrack_l (0xb4)  ' + row(455, 'no', 1234, 0),
+    'Output thread 0xb5, name AudioOut_1D, tid 1650, type 0 (MIXER):', header, '            ' + row(319, 'no', 999, 7)].join('\n')
+  const json = JSON.parse(ok(run(['audio', '--package', 'com.example', '--json'], { AUDIO })).stdout)
+  assert.equal(json.threads.length, 1)
+  const [thread] = json.threads
+  assert.equal(thread.output, 'DEEP_BUFFER')
+  assert.deepEqual(thread.mixerUnderruns, { partial: 1, empty: 2 })
+  assert.deepEqual(thread.tracks.map(t => [t.id, t.active, t.underruns]), [[317, true, 0]])
+  assert.deepEqual(thread.history.map(t => [t.id, t.underruns]), [[454, 2530], [455, 0]])
+  const text = ok(run(['audio', '--package', 'com.example'], { AUDIO })).stdout
+  assert.match(text, /08:25:37.718 track 454 .*underrun frames 2530 \(57.4 ms\)/)
+  assert.doesNotMatch(text, /track 455|track 318/)
 })
