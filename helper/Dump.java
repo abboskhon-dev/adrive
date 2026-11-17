@@ -15,6 +15,8 @@ public class Dump {
   public static void main(String[] args) {
     int status = 0;
     try {
+      // Android 17's accessibility client builds a Handler on the main looper.
+      if (Looper.getMainLooper() == null) Looper.prepareMainLooper();
       run(Arrays.asList(args).contains("--all"), Arrays.asList(args).contains("--windows"));
     } catch (Throwable e) {
       while (e instanceof InvocationTargetException && e.getCause() != null) e = e.getCause();
