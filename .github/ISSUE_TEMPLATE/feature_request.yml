@@ -1,0 +1,35 @@
+name: 💡 Feature or change proposal
+description: Propose a command, or a change to arguments, output or what the helper does on the device.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What were you trying to do, and where did the tool stop helping? A real session beats a hypothetical one.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you would add or change. Rough is fine.
+    validations:
+      required: true
+  - type: checkboxes
+    id: surface
+    attributes:
+      label: What it touches
+      options:
+        - label: A new command or diagnostic
+        - label: Arguments or matching rules of an existing command
+        - label: Text output or `--json` shape
+        - label: The device helper (hidden APIs, what is pushed or run on the device)
+        - label: Setup or packaging
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How we would know it works
+      description: The test or device run that would show it does what it says.
+    validations:
+      required: false
