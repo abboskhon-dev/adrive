@@ -13,18 +13,29 @@ Compared with Maestro and other UiAutomator-based tools:
 
 ## Setup
 
-Requires Node.js 18+, JDK 17+, Android SDK platform-tools, an SDK platform and build-tools (with `d8`). The helper targets Android 8 / API 26 or newer. Enable USB debugging and authorize your computer on the device.
+Requires Node.js 18+ and `adb` on your `PATH`. The helper targets Android 8 / API 26 or newer. Enable USB debugging and authorize your computer on the device.
+
+```sh
+npm install -g adb-drive
+adb devices
+export ANDROID_SERIAL=your-device-serial # required when multiple devices are connected
+adrive help
+```
+
+The package is named `adb-drive`; the command is `adrive`. It ships a prebuilt helper dex, which is pushed to `/data/local/tmp/adrive.dex` when its contents change. `helper/Dump.java` and `build.sh` are included so you can read and rebuild it. No npm dependencies are required.
+
+### From source
+
+Building the helper also needs JDK 17+, an Android SDK platform and build-tools (with `d8`).
 
 ```sh
 export ANDROID_HOME="$HOME/Library/Android/sdk" # use your SDK location
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 ./build.sh
-adb devices
-export ANDROID_SERIAL=your-device-serial # required when multiple devices are connected
 ./adrive.mjs help
 ```
 
-The build selects the highest numeric installed platform and build-tools versions. Override with `ANDROID_PLATFORM=android-36 ANDROID_BUILD_TOOLS=36.0.0 ./build.sh`. `ANDROID_SDK_ROOT` is accepted when `ANDROID_HOME` is unset. The dex is built locally, ignored by git, and pushed to `/data/local/tmp/adrive.dex` when its contents change. No npm dependencies are required. Optionally run `npm link` to install the `adrive` command.
+The build selects the highest numeric installed platform and build-tools versions. Override with `ANDROID_PLATFORM=android-36 ANDROID_BUILD_TOOLS=36.0.0 ./build.sh`. `ANDROID_SDK_ROOT` is accepted when `ANDROID_HOME` is unset. The dex is ignored by git and built by `npm pack` before publishing. Optionally run `npm link` to install the `adrive` command.
 
 ## Examples
 

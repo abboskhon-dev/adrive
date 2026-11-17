@@ -1,13 +1,26 @@
 {
-  "name": "adrive",
+  "name": "adb-drive",
   "version": "0.1.0",
+  "description": "Inspect and drive Android apps over adb, release builds included",
+  "keywords": ["android", "adb", "automation", "accessibility", "cli"],
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/abboskhon-dev/adrive.git"
+  },
   "bin": {
     "adrive": "adrive.mjs"
   },
+  "files": [
+    "adrive.mjs",
+    "build.sh",
+    "helper/Dump.java",
+    "helper/build/classes.dex"
+  ],
   "scripts": {
     "build": "./build.sh",
+    "prepack": "./build.sh",
     "test": "node --test"
   },
   "engines": {
