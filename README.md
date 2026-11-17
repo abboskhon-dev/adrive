@@ -9,7 +9,7 @@ Compared with Maestro and other UiAutomator-based tools:
 - **Diagnoses release builds.** `perf` (CPU per thread, memory, frame jank), `audio` (track underruns, buffer sizes, output path), `crash`, and per-process `log` all work without a debuggable build.
 - **Keeps accessibility services running.** TalkBack and other services stay active while the tree is read.
 - **Sees other windows.** `--windows` includes the keyboard, system dialogs, and overlays with their Z-order.
-- **One command, one answer.** No YAML, server, or session to manage; text output for reading, `--json` for scripts and agents. No npm dependencies.
+- **One command, one answer.** No YAML or session to manage; the helper starts itself and exits when idle. Text output for reading, `--json` for scripts and agents. No npm dependencies.
 
 ## Setup
 
@@ -66,6 +66,8 @@ adrive perf --package com.example.app --reset
 adrive audio --package com.example.app --json
 adrive log-clear
 adrive clear com.example.app # deletes app data and signs out
+adrive daemon status
+adrive daemon stop
 ```
 
 Diagnostics default to the focused app. Packages are supplied only with `--package`; a dotted regex is always a regex. `crash` reports the last Java crash matching the exact package or a `package:subprocess`, plus current ANR/crashing state, not historical ANR traces or native tombstones. `log` filters the current main process PID; it does not aggregate subprocesses or logs from previous process instances. `perf` reports Android's available CPU, memory, and gfxinfo counters; gfxinfo does not measure every custom rendering pipeline. `audio` reads `dumpsys media.audio_flinger` for the app's current PIDs: live tracks, their output thread, and recently closed tracks that had underrun frames (from AudioFlinger's per-thread local log). Tracks from earlier process instances are not attributed.
@@ -89,6 +91,8 @@ For active-root-only snapshots, `type` is `-1` and `layer` is `0` (window metada
 ## Compatibility and device access
 
 The helper connects directly to Android's hidden `UiAutomation` shell entry point through reflection, with `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES` so existing accessibility services remain active. It does not depend on the legacy `uiautomator.jar` wrapper. This is still an internal API, not a compatibility guarantee. Failures include the Android version and a diagnostic hint; the connection is disconnected before the helper exits. Avoid concurrent automation sessions on the same device.
+
+After the first command that reads the screen, the helper keeps running and answers later commands over a socket forwarded through adb (`localabstract:adrive`). On an Android 15 phone this takes a `ui` call from about 0.45 s to about 0.1 s. The helper exits after 30 seconds without a request; set `ADRIVE_DAEMON_IDLE=<seconds>` to change that. While it is alive it holds the device's `UiAutomation` session, so other clients of that session, such as `uiautomator dump`, fail until it exits. Run `adrive daemon stop` before using them, or set `ADRIVE_NO_DAEMON=1` to run the helper once per command. `adrive daemon status` shows whether it is running. The socket answers only the shell and root users, so apps on the device cannot read the tree through it.
 
 The helper has been run on Android 15 (a physical device) and Android 17 (an emulator); Android 16 and other OEM builds have not been verified. Test `ui`, `ui --windows --json`, and a harmless action on each target OS/OEM before relying on it. The supported public alternative is an installed instrumentation runner using `Instrumentation.getUiAutomation(flags)`, at the cost of additional setup.
 
