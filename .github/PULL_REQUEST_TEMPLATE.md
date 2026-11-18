@@ -1,4 +1,3 @@
-<!-- Big change? Link its issue (see CONTRIBUTING.md). Otherwise delete this line. -->
 Closes #
 
 ## Summary
@@ -13,3 +12,5 @@ Closes #
 
 - **Door:** <!-- Easy to revert, or one-way (CLI arguments, `--json` shape, released version)? -->
 - **Blast radius:** <!-- Who is affected if this is wrong? -->
+
+- [ ] `CHANGELOG.md` updated, or nothing here is visible to users
