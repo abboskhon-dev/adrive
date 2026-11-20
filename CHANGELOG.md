@@ -23,3 +23,4 @@ release retitles it `## <version> — <date>`.
 ### Internal
 
 - Contributing guide, changelog, issue and PR templates (#3).
+- Benchmark of tree reads against `uiautomator dump`, Maestro and Appium on an animating app, with results in the README (#8).

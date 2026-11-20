@@ -14,6 +14,7 @@ const RUNS = Number(process.env.BENCH_RUNS ?? 20)
 const TIMEOUT = 60000
 const PKG = 'dev.adrive.fixture'
 const NEEDLE = 'Mute Bass'
+const TIMER = /\d+:\d\d\.\d{3}/
 const DRIVERS = ['dev.mobile.maestro', 'dev.mobile.maestro.test', 'io.appium.uiautomator2.server', 'io.appium.uiautomator2.server.test']
 
 if (!serial) { console.error('set ANDROID_SERIAL'); process.exit(1) }
@@ -123,10 +124,14 @@ for (const [name, available, create] of tools) {
   reset()
   const tool = create()
   const calls = []
+  let previous
   for (let i = 0; i <= RUNS; i++) {
     const start = performance.now()
     const out = await tool.read()
-    calls.push({ ms: performance.now() - start, ok: out.includes(NEEDLE) })
+    const timer = out.match(TIMER)?.[0]
+    // A cached tree repeats the previous timer value.
+    calls.push({ ms: performance.now() - start, ok: out.includes(NEEDLE) && !!timer && timer !== previous })
+    previous = timer
     process.stderr.write(`${name} ${i}/${RUNS} ${calls.at(-1).ok ? 'ok' : 'FAIL'} ${Math.round(calls.at(-1).ms)} ms\n`)
   }
   await tool.close?.()
@@ -140,7 +145,7 @@ const versions = [`adrive ${run('git', ['-C', here, 'rev-parse', '--short', 'HEA
 if (has('maestro')) versions.push(`Maestro ${run('maestro', ['--version']).trim().split('\n').at(-1)}`)
 if (appiumUrl) versions.push(`Appium ${(await wd('GET', '/status'))?.build?.version ?? 'unknown'}`)
 console.log(`${prop('ro.product.model')}, Android ${prop('ro.build.version.release')} (API ${prop('ro.build.version.sdk')}). ${versions.join(', ')}.`)
-console.log(`${RUNS + 1} calls per tool on \`${PKG}\`; a call succeeds when its output contains "${NEEDLE}".\n`)
+console.log(`${RUNS + 1} calls per tool on \`${PKG}\`; a call succeeds when its output contains "${NEEDLE}" and a timer value that differs from the previous call's.\n`)
 console.log('| Tool | Read the tree | First call | Later calls, median | Later calls, p90 |')
 console.log('| --- | --- | --- | --- | --- |')
 console.log(rows.join('\n'))

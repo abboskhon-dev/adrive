@@ -102,6 +102,24 @@ Useful references: [UiAutomation](https://developer.android.com/reference/androi
 
 Maestro provides reusable YAML test flows and CI tooling; mobile-mcp provides cross-platform agent integration; Appium supports disabling idle waits with `waitForIdleTimeout: 0`. adrive focuses on a small shell-friendly Android tool combining interaction and diagnostics.
 
+## Benchmark
+
+Reading the tree of an app whose label and progress bar change on every frame, on a Galaxy S21 (Android 15) over wireless adb. A call counts only if it returns the button label and a timer value newer than the previous call's. Ranges span three runs of 21 calls per tool.
+
+| Tool | Read the tree | First call | Later calls, median |
+| --- | --- | --- | --- |
+| adrive | 63/63 | 0.4–1.1 s | 0.10–0.15 s |
+| adrive, `ADRIVE_NO_DAEMON=1` | 63/63 | 0.3–0.4 s | 0.5–0.7 s |
+| `uiautomator dump` | 0/63 | 11 s | 11 s |
+| `maestro hierarchy` | 63/63 | 10–31 s | 5 s |
+| `maestro mcp`, `inspect_screen` | 63/63 | 27–29 s | 0.75 s |
+| Appium UiAutomator2, defaults | 63/63 | 12–37 s | 10 s |
+| Appium UiAutomator2, `waitForIdleTimeout: 0` | 63/63 | 1.9–2.2 s | 0.05 s |
+
+Only `uiautomator dump` fails on an animating screen; Maestro and Appium read it after installing their driver apps. adrive answers first, with nothing installed, while Appium with idle waits off is faster once its session is warm. First-call times for Maestro and Appium include installing their drivers when missing.
+
+Run it yourself with `bench/fixture/build.sh`, then `ANDROID_SERIAL=<serial> node bench/bench.mjs`; set `APPIUM_URL` to include Appium. Full tables are in [`bench/RESULTS.md`](bench/RESULTS.md).
+
 ## Development
 
 ```sh
