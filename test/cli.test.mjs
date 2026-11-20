@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:net'
+import { createHash } from 'node:crypto'
 import { quote } from '../adrive.mjs'
 
 const dir = mkdtempSync(join(tmpdir(), 'adrive-test-'))
@@ -18,7 +20,11 @@ const fs = require('fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CALLS, JSON.stringify(args)+'\\n');
 const cmd = args[1] || '';
-if (cmd.includes('app_process')) process.stdout.write(process.env.DUMP);
+if (cmd.includes('--serve')) process.stdout.write(process.env.SERVE_PID || '');
+else if (cmd.includes('app_process')) process.stdout.write(process.env.DUMP);
+else if (args[0] === 'get-serialno') process.stdout.write((process.env.SERIALNO || 'device-1') + '\\n');
+else if (cmd.startsWith('kill -0')) process.stdout.write(process.env.ALIVE || '');
+else if (args[0] === 'forward' && args[1] === '--list') process.stdout.write(process.env.FORWARD || '');
 else if (cmd.includes('md5sum')) process.stdout.write('f16d05ec6b29228d2c61adb1e9263f78  file');
 else if (cmd === "'dumpsys' 'window'") process.stdout.write(process.env.FOCUS);
 else if (cmd.startsWith('pidof ')) process.stdout.write('1234');
@@ -28,16 +34,45 @@ else if (args[0] === 'logcat') process.stdout.write(process.env.LOGS || 'foo.bar
 const node = (fields = {}) => ({ class: 'android.widget.Button', text: 'Delete', desc: '', id: '',
   x: 100, y: 200, left: 50, top: 150, right: 150, bottom: 250, clickable: true, enabled: true, ...fields })
 const window = (nodes, id = 1) => ({ id, type: 1, layer: 0, package: 'com.example', nodes })
+const environment = (extra) => ({ ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: callsFile,
+  DUMP: JSON.stringify({ version: 1, windows: [window([node()])] }),
+  FOCUS: 'mCurrentFocus=Window{a u0 com.example/.MainActivity}', ADRIVE_NO_DAEMON: '1', ...extra })
+const recorded = () => readFileSync(callsFile, 'utf8').split('\n').filter(Boolean).map(JSON.parse)
 function run(args, extra = {}) {
   writeFileSync(callsFile, '')
   const result = spawnSync(process.execPath, [join(dir, 'adrive.mjs'), ...args], {
-    encoding: 'utf8', timeout: 5000,
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: callsFile,
-      DUMP: JSON.stringify({ version: 1, windows: [window([node()])] }),
-      FOCUS: 'mCurrentFocus=Window{a u0 com.example/.MainActivity}', ...extra }
+    encoding: 'utf8', timeout: 5000, env: environment(extra) })
+  return { ...result, calls: recorded() }
+}
+// The daemon tests answer from this process, so the CLI must not block it.
+function runWithDaemon(args, port, extra = {}) {
+  writeFileSync(callsFile, '')
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [join(dir, 'adrive.mjs'), ...args], { env: environment({
+      ADRIVE_NO_DAEMON: '', ANDROID_SERIAL: 'device-1',
+      FORWARD: port ? `other tcp:1 localabstract:adrive\ndevice-1 tcp:${port} localabstract:adrive\n` : '', ...extra }) })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('close', (status) => resolve({ status, stdout, stderr, calls: recorded() }))
   })
-  const calls = readFileSync(callsFile, 'utf8').split('\n').filter(Boolean).map(JSON.parse)
-  return { ...result, calls }
+}
+// Each connection gets the next reply; null closes without answering, like adb with no helper listening.
+async function fakeDaemon(...replies) {
+  const requests = []
+  const server = createServer((socket) => {
+    let data = ''
+    socket.setEncoding('utf8')
+    socket.on('data', (chunk) => {
+      data += chunk
+      if (!data.endsWith('\n')) return
+      requests.push(JSON.parse(data))
+      const reply = replies.length > 1 ? replies.shift() : replies[0]
+      socket.end(reply === null ? '' : `${JSON.stringify(reply)}\n`)
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return { port: server.address().port, requests, close: () => new Promise((resolve) => server.close(resolve)) }
 }
 function ok(result) { assert.equal(result.status, 0, result.stderr); return result }
 const shellCommand = (...args) => ['shell', args.map(quote).join(' ')]
@@ -140,4 +175,93 @@ test('audio reports only the app\'s tracks, live and closed with underruns', () 
   const text = ok(run(['audio', '--package', 'com.example'], { AUDIO })).stdout
   assert.match(text, /08:25:37.718 track 454 .*underrun frames 2530 \(57.4 ms\)/)
   assert.doesNotMatch(text, /track 455|track 318/)
+})
+
+const fixtureHash = createHash('md5').update('fixture').digest('hex')
+const helperCalls = (calls) => calls.filter(c => /app_process|md5sum/.test(c[1] ?? ''))
+
+test('a running daemon answers without starting the helper', async () => {
+  const data = { version: 1, windows: [window([node({ text: 'From daemon', x: 7 })])] }
+  const daemon = await fakeDaemon(data)
+  try {
+    const ui = await runWithDaemon(['ui', '--json', '--all', '--windows'], daemon.port)
+    assert.equal(ui.status, 0, ui.stderr)
+    assert.deepEqual(JSON.parse(ui.stdout), data)
+    assert.deepEqual(daemon.requests, [{ hash: fixtureHash, all: true, windows: true }])
+    assert.deepEqual(ui.calls, [['forward', '--list']])
+    const tap = await runWithDaemon(['tap', 'From daemon'], daemon.port)
+    assert.deepEqual(tap.calls, [['forward', '--list'], shellCommand('input', 'tap', 7, 200)])
+  } finally { await daemon.close() }
+})
+test('a missing or stale daemon is started with the current helper, then asked again', async () => {
+  const data = { version: 1, windows: [window([node()])] }
+  for (const first of [null, { error: 'stale' }]) {
+    const daemon = await fakeDaemon(first, data)
+    try {
+      const result = await runWithDaemon(['ui', '--json'], daemon.port, { ADRIVE_DAEMON_IDLE: '5' })
+      assert.equal(result.status, 0, result.stderr)
+      assert.deepEqual(JSON.parse(result.stdout), data)
+      assert.equal(daemon.requests.length, 2)
+      const [check, start] = helperCalls(result.calls)
+      assert.match(check[1], /md5sum/)
+      assert.match(start[1], new RegExp(`Dump --serve ${fixtureHash} 5 >/dev/null 2>&1 & echo \\$!$`))
+    } finally { await daemon.close() }
+  }
+})
+test('a daemon error is reported; no forward falls back to one helper run', async () => {
+  const daemon = await fakeDaemon({ error: 'java.lang.IllegalStateException: no accessible active window' })
+  try {
+    const failed = await runWithDaemon(['ui'], daemon.port)
+    assert.equal(failed.status, 1)
+    assert.match(failed.stderr, /no accessible active window/)
+    assert.deepEqual(helperCalls(failed.calls), [])
+  } finally { await daemon.close() }
+  const fallback = await runWithDaemon(['ui', '--all'], 0)
+  assert.equal(fallback.status, 0, fallback.stderr)
+  assert.deepEqual(fallback.calls.slice(0, 2), [['forward', '--list'], ['forward', 'tcp:0', 'localabstract:adrive']])
+  assert.match(fallback.calls.at(-1)[1], /Dump --all$/)
+  assert.equal((await runWithDaemon(['ui'], 0, { ADRIVE_DAEMON_IDLE: '0' })).status, 1)
+})
+test('a helper that loses its connection exits, and the command reruns once', async () => {
+  const daemon = await fakeDaemon({ error: 'java.lang.IllegalStateException: UiAutomation not connected', restart: true })
+  try {
+    const result = await runWithDaemon(['ui'], daemon.port)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(helperCalls(result.calls).at(-1)[1], /Dump$/)
+  } finally { await daemon.close() }
+})
+test('a starting helper is waited on until it answers or exits', async () => {
+  const daemon = await fakeDaemon(null)
+  try {
+    const result = await runWithDaemon(['ui'], daemon.port, { SERVE_PID: '4321\n' })
+    assert.equal(result.status, 0, result.stderr)
+    const checks = result.calls.filter((c) => /^kill -0 4321/.test(c[1] ?? ''))
+    assert.equal(checks.length, 1)
+    assert.match(helperCalls(result.calls).at(-1)[1], /Dump$/)
+  } finally { await daemon.close() }
+})
+test('without ANDROID_SERIAL, only the default device\'s forward is used', async () => {
+  const daemon = await fakeDaemon({ version: 1, windows: [window([node()])] })
+  try {
+    const result = await runWithDaemon(['ui'], daemon.port, { ANDROID_SERIAL: '', SERIALNO: 'device-2' })
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(daemon.requests, [])
+    assert.deepEqual(result.calls.slice(0, 3), [['get-serialno'], ['forward', '--list'], ['forward', 'tcp:0', 'localabstract:adrive']])
+  } finally { await daemon.close() }
+})
+test('daemon status and stop never start a helper', async () => {
+  const daemon = await fakeDaemon({ ok: true, pid: 42, idleSeconds: 30 })
+  try {
+    const status = await runWithDaemon(['daemon', 'status'], daemon.port)
+    assert.equal(status.stdout.trim(), 'running (pid 42, exits after 30 s idle)')
+    const stop = await runWithDaemon(['daemon', 'stop'], daemon.port)
+    assert.equal(stop.stdout.trim(), 'stopped')
+    assert.deepEqual(stop.calls, [['forward', '--list'], ['forward', '--remove', `tcp:${daemon.port}`]])
+    assert.deepEqual(daemon.requests, [{ cmd: 'status' }, { cmd: 'stop' }])
+  } finally { await daemon.close() }
+  const none = await runWithDaemon(['daemon', 'status'], 0)
+  assert.equal(none.stdout.trim(), 'not running')
+  assert.deepEqual(none.calls, [['forward', '--list']])
+  assert.equal(run(['daemon']).status, 1)
+  assert.equal(run(['daemon', 'start']).status, 1)
 })

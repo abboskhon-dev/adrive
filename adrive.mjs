@@ -2,12 +2,15 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, realpathSync } from 'node:fs'
+import { connect } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const localDex = join(here, 'helper/build/classes.dex')
 const remoteDex = '/data/local/tmp/adrive.dex'
+const helperRun = `ANDROID_DATA=/data/local/tmp CLASSPATH=${remoteDex} app_process /system/bin Dump`
+const helperSocket = 'localabstract:adrive'
 
 const USAGE = `adrive: drive any Android app (release builds too) over adb. Device: ANDROID_SERIAL.
 
@@ -35,7 +38,10 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   perf [--package pkg] [--reset]           CPU by thread, memory, frame jank since last --reset
   audio [--package pkg] [--json]           the app's audio tracks: underruns, buffers, output thread
   open <url>                     open a deep link
-  clear <pkg>                    wipe app data (signs out)`
+  clear <pkg>                    wipe app data (signs out)
+  daemon status|stop             the helper stays up 30 s after a command; stop frees the device for other tools
+
+  ADRIVE_NO_DAEMON=1 runs the helper once per command. ADRIVE_DAEMON_IDLE=<seconds> changes the 30 s.`
 
 const adb = (args, opts = {}) =>
   execFileSync('adb', args, { encoding: opts.binary ? 'buffer' : 'utf8', timeout: opts.timeout ?? 15000, maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -76,19 +82,75 @@ function arity(args, min, max, usage) {
 }
 
 
-function ensureHelper() {
+function helperHash() {
   let bytes
   try { bytes = readFileSync(localDex) } catch { throw new Error('helper missing: run ./build.sh first') }
-  const hash = createHash('md5').update(bytes).digest('hex')
+  return createHash('md5').update(bytes).digest('hex')
+}
+function ensureHelper(hash = helperHash()) {
   const remote = sh(`md5sum ${remoteDex} 2>/dev/null; true`).split(' ')[0]
   if (remote !== hash) adb(['push', localDex, remoteDex])
 }
 
-function dump(all = false, windows = false) {
-  ensureHelper()
-  const out = sh(`ANDROID_DATA=/data/local/tmp CLASSPATH=${remoteDex} app_process /system/bin Dump${all ? ' --all' : ''}${windows ? ' --windows' : ''}`)
-  let result
-  try { result = JSON.parse(out) } catch { throw new Error('invalid helper JSON; rebuild with ./build.sh') }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+function forwardedPort(create = true) {
+  // get-serialno fails with several devices, like the adb shell calls this forward stands in for.
+  const serial = process.env.ANDROID_SERIAL || adb(['get-serialno']).trim()
+  for (const line of adb(['forward', '--list']).split('\n')) {
+    const [device, local, remote] = line.trim().split(/\s+/)
+    if (remote === helperSocket && device === serial && /^tcp:\d+$/.test(local)) return +local.slice(4)
+  }
+  const port = create ? +adb(['forward', 'tcp:0', helperSocket]).trim() : 0
+  return Number.isInteger(port) && port > 0 ? port : null
+}
+// Resolves null when nothing answers: adb closes the forward if the helper is not listening.
+function ask(port, request) {
+  return new Promise((resolve) => {
+    let data = ''
+    const socket = connect({ host: '127.0.0.1', port })
+    socket.setEncoding('utf8')
+    socket.setTimeout(15000, () => socket.destroy())
+    socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`))
+    socket.on('data', (chunk) => { data += chunk })
+    socket.on('error', () => {})
+    socket.on('close', () => { try { resolve(JSON.parse(data)) } catch { resolve(null) } })
+  })
+}
+async function daemonDump(all, windows) {
+  if (process.env.ADRIVE_NO_DAEMON) return null
+  const idle = number(process.env.ADRIVE_DAEMON_IDLE ?? 30, 'ADRIVE_DAEMON_IDLE', 1)
+  const hash = helperHash()
+  try {
+    const port = forwardedPort()
+    if (!port) return null
+    const request = { hash, all, windows }
+    let reply = await ask(port, request)
+    if (!reply || reply.error === 'stale') {
+      ensureHelper(hash)
+      const pid = +sh(`${helperRun} --serve ${hash} ${idle} >/dev/null 2>&1 & echo $!`).trim()
+      reply = null
+      // Wait on the helper, not a timer: a one-shot run while it connects would fight it for UiAutomation.
+      for (let i = 1; !reply; i++) {
+        await sleep(100)
+        reply = await ask(port, request)
+        if (reply) break
+        if (i % 5 === 0 && pid > 0 && !sh(`kill -0 ${pid} 2>/dev/null && echo up; true`).includes('up')) return null
+        if (i === 150) throw Object.assign(new Error('adrive helper did not start within 15 s; run adrive daemon stop'), { fatal: true })
+      }
+    }
+    return reply?.restart ? null : reply
+  } catch (e) { if (e.fatal) throw e; return null }
+}
+
+async function dump(all = false, windows = false) {
+  let result = await daemonDump(all, windows)
+  if (result?.error) throw new Error(`adrive helper failed: ${result.error}`)
+  if (!result) {
+    ensureHelper()
+    const out = sh(`${helperRun}${all ? ' --all' : ''}${windows ? ' --windows' : ''}`)
+    try { result = JSON.parse(out) } catch { throw new Error('invalid helper JSON; rebuild with ./build.sh') }
+  }
   if (result.version !== 1 || !Array.isArray(result.windows)) throw new Error('unsupported helper output; rebuild with ./build.sh')
   return result
 }
@@ -103,9 +165,9 @@ function formatNode(n) {
   return fields.join(' ')
 }
 
-function find(query, nth = 0, windows = false) {
+async function find(query, nth = 0, windows = false) {
   const q = required(query, 'query').toLowerCase()
-  const nodes = dump(false, windows).windows.flatMap((w) => w.nodes.map((n) => ({ ...n, windowId: w.id })))
+  const nodes = (await dump(false, windows)).windows.flatMap((w) => w.nodes.map((n) => ({ ...n, windowId: w.id })))
   const keys = (n) => [n.text, n.desc, n.id, n.id.split('/').at(-1)].map((s) => s.toLowerCase())
   let hits = nodes.filter((n) => keys(n).includes(q))
   if (!hits.length) hits = nodes.filter((n) => keys(n).some((k) => k.includes(q)))
@@ -117,11 +179,11 @@ function find(query, nth = 0, windows = false) {
 function dumpWindowOrder(nodes) {
   return [...new Set(nodes.map((n) => n.windowId))].map((id, i) => [id, i])
 }
-function point(target, nth, windows) {
+async function point(target, nth, windows) {
   required(target, 'target')
   const m = target.match(/^(-?\d+),(-?\d+)$/)
   if (m) return { x: number(m[1], 'x', -2147483648), y: number(m[2], 'y', -2147483648) }
-  const node = find(target, nth, windows)
+  const node = await find(target, nth, windows)
   if (!node) throw new Error(`no element matches "${target}" — run \`adrive ui\``)
   return { ...node, line: formatNode(node) }
 }
@@ -131,12 +193,10 @@ function screenSize() {
   return { w, h }
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
 async function waitFor(query, seconds, present, windows) {
   const end = Date.now() + seconds * 1000
   while (Date.now() < end) {
-    if (!!find(query, 0, windows) === present) return
+    if (!!(await find(query, 0, windows)) === present) return
     await sleep(300)
   }
   throw new Error(`timed out waiting for "${query}" to ${present ? 'appear' : 'disappear'}`)
@@ -269,7 +329,7 @@ async function main([cmd, ...raw]) {
   switch (cmd) {
     case 'ui': {
       arity(args, 0, 0, 'ui [--all] [--windows] [--json]')
-      const data = dump(!!flags['--all'], windows)
+      const data = await dump(!!flags['--all'], windows)
       if (flags['--json']) return console.log(JSON.stringify(data))
       for (const w of data.windows) {
         console.log(`package=${w.package} window=${w.id} type=${w.type} layer=${w.layer}`)
@@ -279,7 +339,7 @@ async function main([cmd, ...raw]) {
     }
     case 'tap':
     case 'longpress': {
-      const p = point(args.join(' '), nth, windows)
+      const p = await point(args.join(' '), nth, windows)
       if (cmd === 'tap') shell('input', 'tap', p.x, p.y)
       else shell('input', 'swipe', p.x, p.y, p.x, p.y, 800)
       return console.log(`${cmd === 'tap' ? 'tapped' : 'long-pressed'} ${p.line ?? `${p.x},${p.y}`}`)
@@ -288,7 +348,7 @@ async function main([cmd, ...raw]) {
       arity(args, 2, Infinity, 'slide <query> <0..1>')
       const fraction = number(args.pop(), 'fraction', 0, false)
       if (fraction > 1) throw new Error('fraction must be <= 1')
-      const node = point(args.join(' '), nth, windows)
+      const node = await point(args.join(' '), nth, windows)
       if (!node.line || node.right <= node.left) throw new Error('slide requires an element with nonempty bounds')
       const pad = Math.min(24, (node.right - node.left) / 20)
       const from = Math.round(fraction < 0.5 ? node.right - pad : node.left + pad)
@@ -376,6 +436,15 @@ async function main([cmd, ...raw]) {
     case 'open':
       arity(args, 1, 1, 'open <url>')
       return shell('am', 'start', '-a', 'android.intent.action.VIEW', '-d', required(args[0], 'url'))
+    case 'daemon': {
+      arity(args, 1, 1, 'daemon status|stop')
+      if (!['status', 'stop'].includes(args[0])) throw new Error('usage: adrive daemon status|stop')
+      const port = forwardedPort(false)
+      const reply = port && await ask(port, { cmd: args[0] })
+      if (port && args[0] === 'stop') adb(['forward', '--remove', `tcp:${port}`])
+      if (!reply?.ok) return console.log('not running')
+      return console.log(args[0] === 'stop' ? 'stopped' : `running (pid ${reply.pid}, exits after ${reply.idleSeconds} s idle)`)
+    }
     case undefined:
     case 'help':
     case '--help':
