@@ -79,7 +79,7 @@ For active-root-only snapshots, `type` is `-1` and `layer` is `0` (window metada
 
 The helper connects directly to Android's hidden `UiAutomation` shell entry point through reflection, with `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES` so existing accessibility services remain active. It does not depend on the legacy `uiautomator.jar` wrapper. This is still an internal API, not a compatibility guarantee. Failures include the Android version and a diagnostic hint; the connection is disconnected before the helper exits. Avoid concurrent automation sessions on the same device.
 
-The revised helper compiles locally; Android 15/16 runtime support has not yet been verified on devices. Test `ui`, `ui --windows --json`, and a harmless action on each target OS/OEM before relying on it. The supported public alternative is an installed instrumentation runner using `Instrumentation.getUiAutomation(flags)`, at the cost of additional setup.
+The helper has been run on Android 15 (a physical device) and Android 17 (an emulator); Android 16 and other OEM builds have not been verified. Test `ui`, `ui --windows --json`, and a harmless action on each target OS/OEM before relying on it. The supported public alternative is an installed instrumentation runner using `Instrumentation.getUiAutomation(flags)`, at the cost of additional setup.
 
 The dex runs with adb shell privileges on the selected device. Use a trusted adb host; the MD5 comparison is only a cache check, not authentication. Dumps, screenshots, and logs can contain personal data. Individual adb calls have a 15-second timeout; `wait`/`gone` polling may overrun their requested duration by one in-flight adb call.
 
