@@ -20,7 +20,10 @@ const fs = require('fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CALLS, JSON.stringify(args)+'\\n');
 const cmd = args[1] || '';
-if (cmd.includes('app_process')) process.stdout.write(process.env.DUMP);
+if (cmd.includes('--serve')) process.stdout.write(process.env.SERVE_PID || '');
+else if (cmd.includes('app_process')) process.stdout.write(process.env.DUMP);
+else if (args[0] === 'get-serialno') process.stdout.write((process.env.SERIALNO || 'device-1') + '\\n');
+else if (cmd.startsWith('kill -0')) process.stdout.write(process.env.ALIVE || '');
 else if (args[0] === 'forward' && args[1] === '--list') process.stdout.write(process.env.FORWARD || '');
 else if (cmd.includes('md5sum')) process.stdout.write('f16d05ec6b29228d2c61adb1e9263f78  file');
 else if (cmd === "'dumpsys' 'window'") process.stdout.write(process.env.FOCUS);
@@ -201,7 +204,7 @@ test('a missing or stale daemon is started with the current helper, then asked a
       assert.equal(daemon.requests.length, 2)
       const [check, start] = helperCalls(result.calls)
       assert.match(check[1], /md5sum/)
-      assert.match(start[1], new RegExp(`Dump --serve ${fixtureHash} 5 >/dev/null 2>&1 &$`))
+      assert.match(start[1], new RegExp(`Dump --serve ${fixtureHash} 5 >/dev/null 2>&1 & echo \\$!$`))
     } finally { await daemon.close() }
   }
 })
@@ -218,6 +221,33 @@ test('a daemon error is reported; no forward falls back to one helper run', asyn
   assert.deepEqual(fallback.calls.slice(0, 2), [['forward', '--list'], ['forward', 'tcp:0', 'localabstract:adrive']])
   assert.match(fallback.calls.at(-1)[1], /Dump --all$/)
   assert.equal((await runWithDaemon(['ui'], 0, { ADRIVE_DAEMON_IDLE: '0' })).status, 1)
+})
+test('a helper that loses its connection exits, and the command reruns once', async () => {
+  const daemon = await fakeDaemon({ error: 'java.lang.IllegalStateException: UiAutomation not connected', restart: true })
+  try {
+    const result = await runWithDaemon(['ui'], daemon.port)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(helperCalls(result.calls).at(-1)[1], /Dump$/)
+  } finally { await daemon.close() }
+})
+test('a starting helper is waited on until it answers or exits', async () => {
+  const daemon = await fakeDaemon(null)
+  try {
+    const result = await runWithDaemon(['ui'], daemon.port, { SERVE_PID: '4321\n' })
+    assert.equal(result.status, 0, result.stderr)
+    const checks = result.calls.filter((c) => /^kill -0 4321/.test(c[1] ?? ''))
+    assert.equal(checks.length, 1)
+    assert.match(helperCalls(result.calls).at(-1)[1], /Dump$/)
+  } finally { await daemon.close() }
+})
+test('without ANDROID_SERIAL, only the default device\'s forward is used', async () => {
+  const daemon = await fakeDaemon({ version: 1, windows: [window([node()])] })
+  try {
+    const result = await runWithDaemon(['ui'], daemon.port, { ANDROID_SERIAL: '', SERIALNO: 'device-2' })
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(daemon.requests, [])
+    assert.deepEqual(result.calls.slice(0, 3), [['get-serialno'], ['forward', '--list'], ['forward', 'tcp:0', 'localabstract:adrive']])
+  } finally { await daemon.close() }
 })
 test('daemon status and stop never start a helper', async () => {
   const daemon = await fakeDaemon({ ok: true, pid: 42, idleSeconds: 30 })

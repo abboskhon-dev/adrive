@@ -110,21 +110,26 @@ public class Dump {
         boolean exit = false;
         synchronized (Dump.class) {
           if (cmd.equals("stop")) {
+            disconnect();
             reply = new JSONObject().put("ok", true).toString();
             exit = true;
           } else if (cmd.equals("status")) {
             reply = new JSONObject().put("ok", true).put("pid", android.os.Process.myPid())
                 .put("idleSeconds", idleMs / 1000).toString();
           } else if (!hash.equals(request.optString("hash"))) {
+            disconnect();
             reply = new JSONObject().put("error", "stale").toString();
             exit = true;
           } else {
             try {
               reply = snapshot(request.optBoolean("all"), request.optBoolean("windows"));
+              lastRequest = SystemClock.elapsedRealtime();
             } catch (Throwable e) {
-              reply = new JSONObject().put("error", String.valueOf(cause(e))).toString();
+              // The connection may be dead; a fresh helper reconnects instead of failing forever.
+              disconnect();
+              reply = new JSONObject().put("error", String.valueOf(cause(e))).put("restart", true).toString();
+              exit = true;
             }
-            lastRequest = SystemClock.elapsedRealtime();
           }
         }
         OutputStream out = client.getOutputStream();

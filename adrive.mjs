@@ -95,10 +95,11 @@ function ensureHelper(hash = helperHash()) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function forwardedPort(create = true) {
-  const serial = process.env.ANDROID_SERIAL
+  // get-serialno fails with several devices, like the adb shell calls this forward stands in for.
+  const serial = process.env.ANDROID_SERIAL || adb(['get-serialno']).trim()
   for (const line of adb(['forward', '--list']).split('\n')) {
     const [device, local, remote] = line.trim().split(/\s+/)
-    if (remote === helperSocket && (!serial || device === serial) && /^tcp:\d+$/.test(local)) return +local.slice(4)
+    if (remote === helperSocket && device === serial && /^tcp:\d+$/.test(local)) return +local.slice(4)
   }
   const port = create ? +adb(['forward', 'tcp:0', helperSocket]).trim() : 0
   return Number.isInteger(port) && port > 0 ? port : null
@@ -127,15 +128,19 @@ async function daemonDump(all, windows) {
     let reply = await ask(port, request)
     if (!reply || reply.error === 'stale') {
       ensureHelper(hash)
-      sh(`${helperRun} --serve ${hash} ${idle} >/dev/null 2>&1 &`)
+      const pid = +sh(`${helperRun} --serve ${hash} ${idle} >/dev/null 2>&1 & echo $!`).trim()
       reply = null
-      for (let i = 0; i < 30 && !reply; i++) {
+      // Wait on the helper, not a timer: a one-shot run while it connects would fight it for UiAutomation.
+      for (let i = 1; !reply; i++) {
         await sleep(100)
         reply = await ask(port, request)
+        if (reply) break
+        if (i % 5 === 0 && pid > 0 && !sh(`kill -0 ${pid} 2>/dev/null && echo up; true`).includes('up')) return null
+        if (i === 150) throw Object.assign(new Error('adrive helper did not start within 15 s; run adrive daemon stop'), { fatal: true })
       }
     }
-    return reply
-  } catch { return null }
+    return reply?.restart ? null : reply
+  } catch (e) { if (e.fatal) throw e; return null }
 }
 
 async function dump(all = false, windows = false) {
