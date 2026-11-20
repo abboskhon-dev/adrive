@@ -5,6 +5,12 @@ release retitles it `## <version> — <date>`.
 
 ## Unreleased
 
+### Added
+
+- **Install from npm without a JDK or Android SDK** (#2)
+  - `npm install -g adb-drive` ships a prebuilt helper dex; the command is still `adrive`.
+  - The package is renamed `adb-drive`, since `adrive` is taken on npm.
+
 ### Fixed
 
 - **Commands that read the screen work on Android 17** (#5)
