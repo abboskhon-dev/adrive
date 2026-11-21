@@ -5,3 +5,4 @@ demo/
 demo.log
 overlay/
 REVIEW_BRIEF.md
+bench/fixture/build/
