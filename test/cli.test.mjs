@@ -11,7 +11,8 @@ import { quote } from '../adrive.mjs'
 const dir = mkdtempSync(join(tmpdir(), 'adrive-test-'))
 after(() => rmSync(dir, { recursive: true, force: true }))
 mkdirSync(join(dir, 'helper/build'), { recursive: true })
-copyFileSync(new URL('../adrive.mjs', import.meta.url), join(dir, 'adrive.mjs'))
+for (const file of ['adrive.mjs', 'mcp.mjs']) copyFileSync(new URL(`../${file}`, import.meta.url), join(dir, file))
+writeFileSync(join(dir, 'package.json'), '{"version":"0.0.0"}')
 writeFileSync(join(dir, 'helper/build/classes.dex'), 'fixture')
 const callsFile = join(dir, 'calls.jsonl')
 const bin = join(dir, 'adb')
@@ -264,4 +265,31 @@ test('daemon status and stop never start a helper', async () => {
   assert.deepEqual(none.calls, [['forward', '--list']])
   assert.equal(run(['daemon']).status, 1)
   assert.equal(run(['daemon', 'start']).status, 1)
+})
+
+test('mcp lists tools and runs them with literal arguments', () => {
+  const messages = [
+    { id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } },
+    { method: 'notifications/initialized' },
+    { id: 2, method: 'tools/list' },
+    { id: 3, method: 'tools/call', params: { name: 'tap', arguments: { target: '--nth' } } },
+    { id: 4, method: 'tools/call', params: { name: 'tap', arguments: { target: 'delete' } } },
+    { id: 5, method: 'tools/call', params: { name: 'tap', arguments: { target: 'delete', nth: '1' } } },
+    { id: 6, method: 'missing' },
+    { id: 7, method: 'tools/call', params: { name: 'wait', arguments: { query: 'x', seconds: 61 } } },
+  ].map((m) => JSON.stringify({ jsonrpc: '2.0', ...m })).join('\n')
+  writeFileSync(callsFile, '')
+  const result = ok(spawnSync(process.execPath, [join(dir, 'adrive.mjs'), 'mcp'], {
+    input: messages, encoding: 'utf8', timeout: 5000, env: environment() }))
+  const replies = result.stdout.trim().split('\n').map(JSON.parse)
+  assert.deepEqual(replies.map((r) => r.id), [1, 2, 3, 4, 5, 6, 7])
+  assert.equal(replies[0].result.protocolVersion, '2025-06-18')
+  assert.ok(replies[1].result.tools.some((t) => t.name === 'clear' && t.annotations.destructiveHint))
+  assert.match(replies[2].result.content[0].text, /no element matches "--nth"/)
+  assert.equal(replies[2].result.isError, true)
+  assert.match(replies[3].result.content[0].text, /^tapped Button text="Delete"/)
+  assert.equal(replies[4].result.content[0].text, 'nth must be a number')
+  assert.equal(replies[5].error.code, -32601)
+  assert.equal(replies[6].result.content[0].text, 'seconds must be <= 60')
+  assert.deepEqual(recorded().filter((c) => c[0] === 'shell' && c[1].startsWith("'input'")), [shellCommand('input', 'tap', 100, 200)])
 })
