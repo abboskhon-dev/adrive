@@ -34,6 +34,8 @@ else if (args[0] === 'forward' && args[1] === '--list') process.stdout.write(pro
 else if (cmd.includes('md5sum')) process.stdout.write('f16d05ec6b29228d2c61adb1e9263f78  file');
 else if (cmd === "'dumpsys' 'window'") process.stdout.write(process.env.FOCUS);
 else if (cmd.startsWith('pidof ')) process.stdout.write('1234');
+else if (cmd === 'dumpsys window displays') process.stdout.write(process.env.DISPLAYS || '');
+else if (cmd === 'wm size') process.stdout.write(process.env.WM_SIZE || '');
 else if (cmd === "'dumpsys' 'media.audio_flinger'") process.stdout.write(process.env.AUDIO || '');
 else if (cmd.startsWith('p=$(pidof')) {
   const n = Number(fs.existsSync(process.env.CALLS + '.n') ? fs.readFileSync(process.env.CALLS + '.n', 'utf8') : 0);
@@ -424,4 +426,43 @@ test('mcp run returns per-step JSON, and the measured steps on failure', () => {
   assert.ok(tracePath.startsWith(tmpdir()))
   assert.equal(readFileSync(tracePath, 'utf8'), 'trace')
   rmSync(dirname(tracePath), { recursive: true })
+})
+test('scroll uses the rotated screen size, then wm size, and fails clearly without either', () => {
+  const landscape = ok(run(['scroll', 'down'], { DISPLAYS: '  init=1080x2340 420dpi cur=2340x1080 app=2340x1017', WM_SIZE: 'Physical size: 1080x2340' }))
+  assert.deepEqual(landscape.calls.at(-1), shellCommand('input', 'swipe', 1170, 864, 1170, 216, 300))
+  const fallback = ok(run(['scroll', 'down'], { WM_SIZE: 'Physical size: 1080x2340\n' }))
+  assert.deepEqual(fallback.calls.at(-1), shellCommand('input', 'swipe', 540, 1872, 540, 468, 300))
+  assert.match(run(['scroll', 'down']).stderr, /could not read the screen size/)
+})
+test('wait keeps waiting through a screen with no windows', () => {
+  const result = run(['wait', 'Delete', '0.5'], { DUMP: JSON.stringify({ version: 1, windows: [] }) })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /timed out waiting/)
+  assert.match(run(['ui'], { DUMP: JSON.stringify({ version: 1, windows: [] }) }).stderr, /no accessible window/)
+})
+test('a gesture the helper cancelled is not replayed through input', async () => {
+  const daemon = await fakeDaemon({ error: 'Android refused the gesture after it started; it was cancelled' })
+  const result = await runWithDaemon(['tap', '10,20'], daemon.port)
+  await daemon.close()
+  assert.equal(result.status, 1)
+  assert.ok(!result.calls.some((c) => c[1]?.includes("'input'")))
+})
+test('ADRIVE_NO_DAEMON only disables the daemon when set to 1', async () => {
+  const daemon = await fakeDaemon({ ok: true })
+  const result = await runWithDaemon(['key', 'back'], daemon.port, { ADRIVE_NO_DAEMON: '0' })
+  await daemon.close()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(daemon.requests.length, 1)
+})
+test('version prints the package version', () => {
+  assert.equal(ok(run(['--version'])).stdout, '0.0.0\n')
+  assert.equal(ok(run(['version'])).stdout, '0.0.0\n')
+})
+test('mcp answers non-object messages and keeps serving', () => {
+  const input = ['null', '[]', JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })].join('\n')
+  const result = ok(spawnSync(process.execPath, [join(dir, 'adrive.mjs'), 'mcp'], { input, encoding: 'utf8', timeout: 5000, env: environment() }))
+  const [first, second, ping] = result.stdout.trim().split('\n').map(JSON.parse)
+  assert.equal(first.error.code, -32600)
+  assert.equal(second.error.code, -32600)
+  assert.deepEqual(ping.result, {})
 })
