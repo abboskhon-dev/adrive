@@ -9,6 +9,9 @@ release retitles it `## <version> — <date>`.
 
 - **MCP server**
   - `adrive mcp` serves every command as a tool over stdio; `screenshot` returns the image.
+- **Measure a scenario step by step with `adrive run`** (#10)
+  - Runs a JSON list of commands and reports frames, jank, CPU per thread and memory for each step.
+  - `--trace` records a Perfetto trace of the whole run; `--json` for scripts and agents.
 - **The helper stays running between commands** (#6)
   - Commands that read the screen take about 0.1 s instead of 0.45 s after the first one.
   - It exits after 30 s idle (`ADRIVE_DAEMON_IDLE`); `ADRIVE_NO_DAEMON=1` runs it once per command.

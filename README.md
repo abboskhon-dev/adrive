@@ -64,6 +64,7 @@ adrive crash --package com.example.app
 adrive perf --package com.example.app
 adrive perf --package com.example.app --reset
 adrive audio --package com.example.app --json
+adrive run steps.json --package com.example.app --trace /tmp/run.perfetto-trace
 adrive log-clear
 adrive clear com.example.app # deletes app data and signs out
 adrive daemon status
@@ -85,6 +86,27 @@ claude mcp add adrive -- adrive mcp
 ```
 
 Other clients take `{"command": "adrive", "args": ["mcp"]}`. Set `ANDROID_SERIAL` in the server's environment when several devices are connected.
+
+## Measuring a scenario
+
+`run` takes a JSON list of steps, from a file or `-` for stdin. Each step is an adrive command as an array, or `{"do": [...], "settle": seconds}` to keep measuring for a while after the action:
+
+```json
+[["tap", "Stems view"], {"do": ["scroll", "down"], "settle": 2}, {"do": ["wait", "Ready"], "settle": 1}]
+```
+
+For each step it reports frames (total, janky, p50/p90/p99 from gfxinfo), CPU time per thread from `/proc`, and PSS with its change since the previous step:
+
+```
+3 scroll down  2.50 s
+  frames 99, janky 15, p50 5 ms, p90 10 ms, p99 48 ms
+  cpu 1190 ms (48%): xaudioagent.dev 370, mqt_v_js 280, RenderThread 260, AudioTrack 130
+  pss 694.0 MB (-336.4)
+```
+
+Steps can be `tap`, `longpress`, `slide`, `type`, `swipe`, `scroll`, `key`, `wait`, `gone`, `shot`, `launch`, `stop` and `open`. Only the step list and command names are checked before the run starts; a step with bad arguments fails when it is reached, after the steps before it have run. The run stops at the first failing step and still reports it and the steps before it. `--json` prints the same data with each step's command output. `--trace file` records a Perfetto trace of the whole run (scheduling, frequency, graphics, views, input, binder and the app's own trace sections) to open in [ui.perfetto.dev](https://ui.perfetto.dev).
+
+Each step's frame counts include the half second or so adrive spends reading memory between steps, while CPU covers only the step itself. CPU is only reported for the app's main process, and a thread that exits during a step loses its time. If the app restarts during a step, CPU is not reported for it.
 
 ## Windows and output
 
