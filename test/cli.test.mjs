@@ -24,12 +24,23 @@ const cmd = args[1] || '';
 if (cmd.includes('--serve')) process.stdout.write(process.env.SERVE_PID || '');
 else if (cmd.includes('app_process')) process.stdout.write(process.env.DUMP);
 else if (args[0] === 'get-serialno') process.stdout.write((process.env.SERIALNO || 'device-1') + '\\n');
+else if (cmd.startsWith('kill -0') && process.env.ALIVE_ONCE) {
+  if (!fs.existsSync(process.env.CALLS + '.alive')) { fs.writeFileSync(process.env.CALLS + '.alive', ''); process.stdout.write('up'); }
+}
 else if (cmd.startsWith('kill -0')) process.stdout.write(process.env.ALIVE || '');
+else if (cmd.startsWith('perfetto ')) process.stdout.write('777\\n');
+else if (args[0] === 'pull') fs.writeFileSync(args[2], process.env.PULL ?? 'trace');
 else if (args[0] === 'forward' && args[1] === '--list') process.stdout.write(process.env.FORWARD || '');
 else if (cmd.includes('md5sum')) process.stdout.write('f16d05ec6b29228d2c61adb1e9263f78  file');
 else if (cmd === "'dumpsys' 'window'") process.stdout.write(process.env.FOCUS);
 else if (cmd.startsWith('pidof ')) process.stdout.write('1234');
 else if (cmd === "'dumpsys' 'media.audio_flinger'") process.stdout.write(process.env.AUDIO || '');
+else if (cmd.startsWith('p=$(pidof')) {
+  const n = Number(fs.existsSync(process.env.CALLS + '.n') ? fs.readFileSync(process.env.CALLS + '.n', 'utf8') : 0);
+  fs.writeFileSync(process.env.CALLS + '.n', String(n + 1));
+  if (String(n) === process.env.FAIL_SAMPLE) process.exit(1);
+  process.stdout.write(process.env['SAMPLE' + n] ?? process.env.SAMPLE ?? 'pid ');
+}
 else if (args[0] === 'logcat') process.stdout.write(process.env.LOGS || 'foo.bar match\\nother\\n');
 `, { mode: 0o755 })
 const node = (fields = {}) => ({ class: 'android.widget.Button', text: 'Delete', desc: '', id: '',
@@ -41,6 +52,8 @@ const environment = (extra) => ({ ...process.env, PATH: `${dir}:${process.env.PA
 const recorded = () => readFileSync(callsFile, 'utf8').split('\n').filter(Boolean).map(JSON.parse)
 function run(args, extra = {}) {
   writeFileSync(callsFile, '')
+  rmSync(`${callsFile}.n`, { force: true })
+  rmSync(`${callsFile}.alive`, { force: true })
   const result = spawnSync(process.execPath, [join(dir, 'adrive.mjs'), ...args], {
     encoding: 'utf8', timeout: 5000, env: environment(extra) })
   return { ...result, calls: recorded() }
@@ -292,4 +305,67 @@ test('mcp lists tools and runs them with literal arguments', () => {
   assert.equal(replies[5].error.code, -32601)
   assert.equal(replies[6].result.content[0].text, 'seconds must be <= 60')
   assert.deepEqual(recorded().filter((c) => c[0] === 'shell' && c[1].startsWith("'input'")), [shellCommand('input', 'tap', 100, 200)])
+})
+
+const stepsFile = join(dir, 'steps.json')
+const stat = (tid, name, ticks) => `${tid} (${name}) S 1 1 0 0 -1 0 0 0 0 0 ${ticks} 0 0 0 20 0 1 0`
+const sampleOut = (ticks, pss, frames) => [`pid 1234`, stat(1234, 'main', ticks[0]), stat(1240, 'RenderThread', ticks[1]),
+  '---', `        TOTAL PSS:   ${pss}            TOTAL RSS:   1`, '---',
+  `Total frames rendered: ${frames}`, 'Janky frames: 3 (10.00%)', '50th percentile: 6ms', '90th percentile: 12ms', '99th percentile: 40ms',
+  '---', stat(1234, 'main', ticks[0] + 1), stat(1240, 'RenderThread', ticks[1])].join('\n')
+
+test('bad steps fail before invoking adb', () => {
+  for (const steps of ['nope', '[]', '{}', '[["run","x"]]', '[["daemon","stop"]]', '[[1]]', '[{"do":["tap","x"],"settle":-1}]']) {
+    writeFileSync(stepsFile, steps)
+    const result = run(['run', stepsFile, '--package', 'com.example'])
+    assert.equal(result.status, 1, steps)
+    assert.deepEqual(result.calls, [], steps)
+  }
+})
+test('run reports frames, CPU by thread and PSS per step', () => {
+  writeFileSync(stepsFile, JSON.stringify([['tap', 'Delete'], { do: ['key', 'back'], settle: 0.01 }]))
+  const result = ok(run(['run', stepsFile, '--package', 'com.example', '--json'], {
+    SAMPLE0: sampleOut([10, 5], 1000, 0), SAMPLE1: sampleOut([20, 35], 1500, 30), SAMPLE2: sampleOut([21, 35], 1400, 2) }))
+  const { steps } = JSON.parse(result.stdout)
+  assert.deepEqual(steps.map((s) => [s.cpuMs, s.threads, s.pssKb, s.pssDeltaKb, s.frames.total]), [
+    [390, [{ name: 'RenderThread', ms: 300 }, { name: 'main', ms: 90 }], 1500, 500, 30],
+    [0, [], 1400, -100, 2]])
+  const idle = JSON.parse(ok(run(['run', stepsFile, '--package', 'com.example', '--json'], { SAMPLE: sampleOut([1, 1], 1000, 0) })).stdout)
+  assert.deepEqual(idle.steps[0].frames, { total: 0, janky: 0, p50: null, p90: null, p99: null })
+  assert.deepEqual(steps[1].frames, { total: 2, janky: 3, p50: 6, p90: 12, p99: 40 })
+  assert.match(steps[0].output, /^tapped Button/)
+  const order = result.calls.map((c) => c[1]?.startsWith('p=$(pidof') ? 'sample' : c[1]?.startsWith("'input'") ? 'input' : null).filter(Boolean)
+  assert.deepEqual(order, ['sample', 'input', 'sample', 'input', 'sample'])
+})
+test('a failing step is reported and ends the run', () => {
+  writeFileSync(stepsFile, JSON.stringify([['tap', 'Missing'], ['key', 'back']]))
+  const result = run(['run', stepsFile, '--package', 'com.example'], { SAMPLE: sampleOut([1, 1], 1000, 5) })
+  assert.equal(result.status, 1)
+  assert.match(result.stdout, /^1 tap Missing .*FAILED: no element matches/)
+  assert.match(result.stderr, /step 1 failed/)
+  assert.ok(!result.calls.some((c) => c[1]?.includes('keyevent')))
+})
+test('a trace is stopped, waited on and pulled', () => {
+  writeFileSync(stepsFile, JSON.stringify([['key', 'back']]))
+  const out = join(dir, 'run.perfetto-trace')
+  const result = ok(run(['run', stepsFile, '--package', 'com.example', '--trace', out], { SAMPLE: sampleOut([1, 1], 1000, 5), ALIVE_ONCE: '1' }))
+  assert.equal(readFileSync(out, 'utf8'), 'trace')
+  const trace = result.calls.map((c) => c[0] === 'pull' ? 'pull' : c[1]?.split(' ').slice(0, 2).join(' ')).filter((c) => /^(perfetto|kill|pull|rm)/.test(c))
+  assert.deepEqual(trace, ['perfetto --background', 'kill -TERM', 'kill -0', 'kill -0', 'pull', 'rm -f'])
+  const empty = run(['run', stepsFile, '--package', 'com.example', '--trace', out, '--json'], { SAMPLE: sampleOut([1, 1], 1000, 5), PULL: '' })
+  assert.equal(empty.status, 1)
+  assert.match(empty.stderr, /empty trace/)
+  const report = JSON.parse(empty.stdout)
+  assert.equal(report.steps.length, 1)
+  assert.equal(report.trace, undefined)
+})
+test('a failed measurement still stops the trace and reports earlier steps', () => {
+  writeFileSync(stepsFile, JSON.stringify([['key', 'back'], ['key', 'home']]))
+  const out = join(dir, 'run.perfetto-trace')
+  for (const [fail, steps] of [['0', 0], ['2', 1]]) {
+    const result = run(['run', stepsFile, '--package', 'com.example', '--trace', out, '--json'], { SAMPLE: sampleOut([1, 1], 1000, 5), FAIL_SAMPLE: fail })
+    assert.equal(result.status, 1, fail)
+    assert.equal(JSON.parse(result.stdout).steps.length, steps, fail)
+    assert.ok(result.calls.some((c) => c[1]?.startsWith('kill -TERM 777')), fail)
+  }
 })

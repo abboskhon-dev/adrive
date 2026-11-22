@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, realpathSync, statSync } from 'node:fs'
 import { connect } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -37,6 +37,8 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   crash [--package pkg]                    last crash / ANR stack traces
   perf [--package pkg] [--reset]           CPU by thread, memory, frame jank since last --reset
   audio [--package pkg] [--json]           the app's audio tracks: underruns, buffers, output thread
+  run <steps.json|-> [--package pkg] [--trace out.perfetto-trace] [--json]
+                                 run steps like [["tap","Play"],{"do":["wait","Ready"],"settle":1}]; frames, CPU, PSS per step
   open <url>                     open a deep link
   clear <pkg>                    wipe app data (signs out)
   daemon status|stop             the helper stays up 30 s after a command; stop frees the device for other tools
@@ -243,6 +245,122 @@ function perf(pkg) {
   return `CPU by thread (pid ${p}):\n${threads}\n\nMemory:\n${mem}\n\nFrames:\n${frames || 'no frames rendered'}`
 }
 
+const STEP_COMMANDS = new Set(['tap', 'longpress', 'slide', 'type', 'swipe', 'scroll', 'key', 'wait', 'gone', 'shot', 'launch', 'stop', 'open'])
+function parseSteps(text) {
+  let list
+  try { list = JSON.parse(text) } catch { throw new Error('steps must be a JSON array') }
+  if (!Array.isArray(list) || !list.length) throw new Error('steps must be a nonempty JSON array')
+  return list.map((raw, i) => {
+    const step = Array.isArray(raw) ? { do: raw } : raw
+    if (!step || !Array.isArray(step.do) || !step.do.every((a) => typeof a === 'string') || !STEP_COMMANDS.has(step.do[0])) {
+      throw new Error(`step ${i + 1}: expected ["command", ...args] or {"do": [...], "settle": seconds}`)
+    }
+    return { args: step.do, settle: number(step.settle ?? 0, `step ${i + 1} settle`, 0, false) }
+  })
+}
+
+// CPU ticks per thread name, from /proc/<pid>/task/*/stat lines.
+function threadTicks(text) {
+  const ticks = new Map()
+  for (const line of text.split('\n')) {
+    const open = line.indexOf('('), close = line.lastIndexOf(')')
+    if (open < 0 || close < open) continue
+    const fields = line.slice(close + 2).split(' ')
+    ticks.set(line.slice(0, open).trim(), { name: line.slice(open + 1, close), ticks: +fields[11] + +fields[12] })
+  }
+  return ticks
+}
+// Stats before the gfxinfo reset close the previous step; stats after it open the next one.
+function sample(pkg) {
+  // Threads can exit between the glob and the read.
+  const stat = 'cat /proc/$p/task/*/stat 2>/dev/null; true'
+  const out = adb(['shell', `p=$(pidof ${quote(pkg)} | cut -d' ' -f1); echo "pid $p"; [ -n "$p" ] || exit 0; ${stat}; echo ---; `
+    + `dumpsys meminfo $p | grep -E 'TOTAL PSS:|^ +TOTAL '; echo ---; dumpsys gfxinfo ${quote(pkg)} reset; echo ---; ${stat}`], { timeout: 45000 })
+  const [head, mem = '', gfx = '', next = ''] = out.split(/^---$/m)
+  const pid = Number(head.match(/^pid (\d+)/m)?.[1]) || null
+  const total = gfx.match(/Total frames rendered: (\d+)/)
+  // With no frames, gfxinfo reports its largest bucket as every percentile.
+  const num = (re) => { const m = total && +total[1] && gfx.match(re); return m ? +m[1] : null }
+  return { pid, end: threadTicks(head), start: threadTicks(next),
+    pss: Number(mem.match(/TOTAL PSS:\s+(\d+)/)?.[1] ?? mem.match(/^\s*TOTAL\s+(\d+)/m)?.[1]) || null,
+    frames: { total: total ? +total[1] : null, janky: num(/Janky frames: (\d+)/) ?? (total ? 0 : null),
+      p50: num(/50th percentile: (\d+)ms/), p90: num(/90th percentile: (\d+)ms/), p99: num(/99th percentile: (\d+)ms/) } }
+}
+function measure(before, after) {
+  if (!before.pid || before.pid !== after.pid) return { cpuMs: null, threads: [] }
+  const byName = new Map()
+  for (const [tid, t] of after.end) {
+    const ms = (t.ticks - (before.start.get(tid)?.ticks ?? 0)) * 10
+    if (ms > 0) byName.set(t.name, (byName.get(t.name) ?? 0) + ms)
+  }
+  const threads = [...byName].map(([name, ms]) => ({ name, ms })).sort((a, b) => b.ms - a.ms)
+  return { cpuMs: threads.reduce((sum, t) => sum + t.ms, 0), threads }
+}
+
+const PERFETTO_OUT = '/data/misc/perfetto-traces/adrive.perfetto-trace'
+function startTrace(pkg) {
+  const pid = sh(`perfetto --background -o ${PERFETTO_OUT} -t 600s -b 64mb --app ${quote(pkg)} sched freq idle am wm gfx view input dalvik binder_driver 2>&1`).trim()
+  if (!/^\d+$/.test(pid)) throw new Error(`perfetto failed to start: ${pid}`)
+  return pid
+}
+async function stopTrace(pid, file) {
+  sh(`kill -TERM ${pid}`)
+  // perfetto writes the trace only after it exits, which can take seconds.
+  for (let i = 0; sh(`kill -0 ${pid} 2>/dev/null && echo up; true`).includes('up'); i++) {
+    if (i === 120) throw new Error(`perfetto did not finish within 60 s; the trace is at ${PERFETTO_OUT}`)
+    await sleep(500)
+  }
+  adb(['pull', PERFETTO_OUT, file], { timeout: 60000 })
+  sh(`rm -f ${PERFETTO_OUT}`)
+  if (!statSync(file).size) throw new Error('perfetto wrote an empty trace')
+}
+
+const label = (args) => args.map((a) => /^[\w.,:/-]+$/.test(a) ? a : JSON.stringify(a)).join(' ')
+function formatStep(s) {
+  const f = s.frames, lines = [`${s.step} ${label(s.args)}  ${(s.ms / 1000).toFixed(2)} s${s.error ? `  FAILED: ${s.error}` : ''}`]
+  lines.push(f.total === null ? '  frames: none reported' : !f.total ? '  frames 0'
+    : `  frames ${f.total}, janky ${f.janky}, p50 ${f.p50} ms, p90 ${f.p90} ms, p99 ${f.p99} ms`)
+  if (s.cpuMs !== null) {
+    const top = s.threads.slice(0, 4).map((t) => `${t.name} ${t.ms}`).join(', ')
+    lines.push(`  cpu ${s.cpuMs} ms (${Math.round(s.cpuMs / s.ms * 100)}%)${top ? `: ${top}` : ''}`)
+  } else lines.push('  cpu: app not running for the whole step')
+  if (s.pssKb !== null) lines.push(`  pss ${(s.pssKb / 1024).toFixed(1)} MB${s.pssDeltaKb === null ? '' : ` (${s.pssDeltaKb >= 0 ? '+' : ''}${(s.pssDeltaKb / 1024).toFixed(1)})`}`)
+  return lines.join('\n')
+}
+
+async function runSteps(steps, pkg, trace, json) {
+  const tracer = trace && startTrace(pkg)
+  const results = []
+  let failure
+  // Whatever fails, the trace is stopped and the steps measured so far are reported.
+  try {
+    let before = sample(pkg)
+    for (const [i, step] of steps.entries()) {
+      const start = Date.now(), output = [], print = console.log
+      let error
+      console.log = (...a) => output.push(a.join(' '))
+      try { await main(step.args) } catch (e) { error = e } finally { console.log = print }
+      await sleep(step.settle * 1000)
+      const ms = Date.now() - start
+      const after = sample(pkg)
+      results.push({ step: i + 1, args: step.args, ms, ...measure(before, after), frames: after.frames, pssKb: after.pss,
+        pssDeltaKb: after.pss && before.pss ? after.pss - before.pss : null, output: output.join('\n'), ...(error && { error: error.message }) })
+      if (!json) console.log(formatStep(results.at(-1)))
+      before = after
+      if (error) { failure = new Error(`step ${i + 1} failed: ${error.message}`); break }
+    }
+  } catch (e) { failure = e }
+  if (tracer) {
+    try { await stopTrace(tracer, trace) } catch (e) {
+      failure = new Error(failure ? `${failure.message}; ${e.message}` : e.message)
+      trace = null
+    }
+  }
+  if (json) console.log(JSON.stringify({ package: pkg, steps: results, ...(trace && { trace }) }))
+  else if (trace) console.log(`trace: ${trace}`)
+  if (failure) throw failure
+}
+
 // AudioFlinger column titles that span two whitespace-separated words.
 const SPLIT_TITLES = new Set(['Port Id', 'Chn mask', 'G db', 'L dB', 'R dB', 'VS dB', 'L Vol', 'R Vol'])
 function columns(header) {
@@ -321,6 +439,7 @@ async function main([cmd, ...raw]) {
   if (cmd === 'audio') allowed['--json'] = false
   if (cmd === 'log') allowed['--lines'] = true
   if (cmd === 'perf') allowed['--reset'] = false
+  if (cmd === 'run') Object.assign(allowed, { '--package': true, '--trace': true, '--json': false })
   // Text is literal, including --nth. An initial -- is an optional delimiter.
   const { args, flags } = cmd === 'type'
     ? { args: raw[0] === '--' ? raw.slice(1) : raw, flags: {} }
@@ -433,6 +552,11 @@ async function main([cmd, ...raw]) {
       const threads = parseAudio(shell('dumpsys', 'media.audio_flinger'), pids)
       if (flags['--json']) return console.log(JSON.stringify({ package: pkg, pids, threads }))
       return console.log(formatAudio(pkg, pids, threads))
+    }
+    case 'run': {
+      arity(args, 1, 1, 'run <steps.json|-> [--package pkg] [--trace out.perfetto-trace] [--json]')
+      const steps = parseSteps(readFileSync(args[0] === '-' ? 0 : args[0], 'utf8'))
+      return runSteps(steps, pkgArg(flags['--package']), flags['--trace'], !!flags['--json'])
     }
     case 'open':
       arity(args, 1, 1, 'open <url>')
