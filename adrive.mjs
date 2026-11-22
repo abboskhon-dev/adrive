@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, realpathSync, statSync } from 'node:fs'
 import { connect } from 'node:net'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -24,7 +25,7 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   key back|home|enter|del|tab|<KEYCODE>
   wait <query> [seconds]     wait until an element appears (default 10 s)
   gone <query> [seconds]     wait until it disappears
-  shot [file.png]            screenshot (default /tmp/adrive.png)
+  shot [file.png]            screenshot (default adrive.png in the temp folder)
   launch <package>
   stop <package>
   current                    foreground package/activity
@@ -43,6 +44,7 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   clear <pkg>                    wipe app data (signs out)
   daemon status|stop             the helper stays up 30 s after a command; stop frees the device for other tools
   mcp                            run as an MCP server over stdio
+  version                        print the adrive version
 
   ADRIVE_NO_DAEMON=1 runs the helper once per command. ADRIVE_DAEMON_IDLE=<seconds> changes the 30 s.`
 
@@ -121,7 +123,7 @@ function ask(port, request, timeout = 15000) {
   })
 }
 async function daemonAsk(fields) {
-  if (process.env.ADRIVE_NO_DAEMON) return null
+  if (process.env.ADRIVE_NO_DAEMON === '1') return null
   const idle = number(process.env.ADRIVE_DAEMON_IDLE ?? 30, 'ADRIVE_DAEMON_IDLE', 1)
   const hash = helperHash()
   try {
@@ -197,9 +199,11 @@ async function point(target, nth, windows) {
   return { ...node, line: formatNode(node) }
 }
 
+// `wm size` is always portrait; the display's cur= size follows rotation.
 function screenSize() {
-  const [w, h] = sh('wm size').match(/(\d+)x(\d+)\s*$/).slice(1).map(Number)
-  return { w, h }
+  const m = sh('dumpsys window displays').match(/\bcur=(\d+)x(\d+)/) ?? sh('wm size').match(/(\d+)x(\d+)\s*$/)
+  if (!m) throw new Error('could not read the screen size from dumpsys window or wm size')
+  return { w: +m[1], h: +m[2] }
 }
 
 async function waitFor(query, seconds, present, windows) {
@@ -470,6 +474,7 @@ async function main([cmd, ...raw]) {
       arity(args, 0, 0, 'ui [--all] [--windows] [--json]')
       const data = await dump(!!flags['--all'], windows)
       if (flags['--json']) return console.log(JSON.stringify(data))
+      if (!data.windows.length) throw new Error('no accessible window; is the screen on and unlocked?')
       for (const w of data.windows) {
         console.log(`package=${w.package} window=${w.id} type=${w.type} layer=${w.layer}`)
         for (const n of w.nodes) console.log(formatNode(n))
@@ -530,7 +535,7 @@ async function main([cmd, ...raw]) {
       return waitFor(required(args[0], 'query'), number(args[1] ?? 10, 'seconds', 0.001, false), cmd === 'wait', windows)
     case 'shot': {
       arity(args, 0, 1, 'shot [file.png]')
-      const file = args[0] ?? '/tmp/adrive.png'
+      const file = args[0] ?? join(tmpdir(), 'adrive.png')
       writeFileSync(file, adb(['exec-out', 'screencap', '-p'], { binary: true }))
       return console.log(file)
     }
@@ -592,6 +597,10 @@ async function main([cmd, ...raw]) {
     case 'mcp':
       arity(args, 0, 0, 'mcp')
       return (await import('./mcp.mjs')).serve()
+    case 'version':
+    case '--version':
+      arity(args, 0, 0, 'version')
+      return console.log(JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version)
     case undefined:
     case 'help':
     case '--help':

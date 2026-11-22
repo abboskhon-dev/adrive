@@ -6,7 +6,7 @@ body:
     attributes:
       label: Before submitting a new issue
       options:
-        - label: I tested on the latest `main` and rebuilt the helper with `./build.sh`.
+        - label: I tested on the latest npm release, or on `main` with the helper rebuilt by `./build.sh`.
           required: true
         - label: I checked for possible duplicate issues.
           required: true
@@ -29,8 +29,8 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Device or emulator, Android version, app build type, host OS, Node version.
-      placeholder: "Pixel 8, Android 15, release build, macOS 15, Node 22"
+      description: adrive version (`adrive version`), device or emulator, Android version, app build type, host OS, Node version.
+      placeholder: "adrive 0.1.0, Pixel 8, Android 15, release build, macOS 15, Node 22"
     validations:
       required: true
   - type: textarea

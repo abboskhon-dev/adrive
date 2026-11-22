@@ -228,6 +228,7 @@ export function serve() {
     if (!line.trim()) return
     let message
     try { message = JSON.parse(line) } catch { return write({ id: null, error: { code: -32700, message: 'parse error' } }) }
+    if (!message || typeof message !== 'object' || Array.isArray(message)) return write({ id: null, error: { code: -32600, message: 'invalid request' } })
     // One device, one action at a time.
     queue = queue.then(async () => {
       try {
@@ -236,7 +237,7 @@ export function serve() {
       } catch (e) {
         if (message.id !== undefined) write({ id: message.id, error: { code: e.code ?? -32603, message: e.message } })
       }
-    })
+    }).catch((e) => console.error(e))
   })
   return new Promise((resolve) => lines.on('close', () => queue.then(resolve)))
 }

@@ -60,3 +60,5 @@ To release:
 1. Open a PR that sets `version` in `package.json` and renames `Unreleased` in `CHANGELOG.md` to
    `x.y.z — YYYY-MM-DD`, with a fresh empty `Unreleased` above it.
 2. After it merges, tag that commit `vx.y.z` and push the tag.
+3. From a clean checkout of the tag, run `npm test` and `npm publish`. `prepack` rebuilds the
+   helper dex, so the published dex matches `helper/Dump.java` at the tag.

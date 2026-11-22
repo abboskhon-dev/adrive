@@ -139,7 +139,7 @@ public class Dump {
               if (cmd.equals("dump")) reply = snapshot(request.optBoolean("all"), request.optBoolean("windows"));
               else reply = input(cmd, request);
               lastRequest = SystemClock.elapsedRealtime();
-            } catch (IllegalArgumentException e) {
+            } catch (IllegalArgumentException | Partial e) {
               reply = new JSONObject().put("error", e.getMessage()).toString();
             } catch (Refused e) {
               reply = new JSONObject().put("ok", false).toString();
@@ -202,7 +202,9 @@ public class Dump {
         if (code <= 0) throw new IllegalArgumentException("unknown key " + name);
         long t = SystemClock.uptimeMillis();
         inject(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
-        inject(new KeyEvent(t, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
+        try {
+          inject(new KeyEvent(t, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
+        } catch (Refused e) { throw new Partial(); }
         break;
       }
       default: throw new IllegalArgumentException("unknown command " + cmd);
@@ -214,12 +216,17 @@ public class Dump {
   static void swipe(int x1, int y1, int x2, int y2, long ms) throws Exception {
     long down = SystemClock.uptimeMillis();
     touch(MotionEvent.ACTION_DOWN, down, down, x1, y1);
-    for (long t = 10; t < ms; t += 10) {
-      SystemClock.sleep(Math.max(0, down + t - SystemClock.uptimeMillis()));
-      touch(MotionEvent.ACTION_MOVE, down, SystemClock.uptimeMillis(), x1 + (x2 - x1) * t / ms, y1 + (y2 - y1) * t / ms);
+    try {
+      for (long t = 10; t < ms; t += 10) {
+        SystemClock.sleep(Math.max(0, down + t - SystemClock.uptimeMillis()));
+        touch(MotionEvent.ACTION_MOVE, down, SystemClock.uptimeMillis(), x1 + (x2 - x1) * t / ms, y1 + (y2 - y1) * t / ms);
+      }
+      SystemClock.sleep(Math.max(0, down + ms - SystemClock.uptimeMillis()));
+      touch(MotionEvent.ACTION_UP, down, SystemClock.uptimeMillis(), x2, y2);
+    } catch (Refused e) {
+      try { touch(MotionEvent.ACTION_CANCEL, down, SystemClock.uptimeMillis(), x2, y2); } catch (Refused ignored) {}
+      throw new Partial();
     }
-    SystemClock.sleep(Math.max(0, down + ms - SystemClock.uptimeMillis()));
-    touch(MotionEvent.ACTION_UP, down, SystemClock.uptimeMillis(), x2, y2);
   }
 
   static void touch(int action, long down, long time, float x, float y) {
@@ -230,6 +237,11 @@ public class Dump {
 
   // Android refused the event; the connection is fine and the CLI falls back to `input`.
   static class Refused extends RuntimeException {}
+
+  // Refused after DOWN was delivered: replaying it through `input` would act twice.
+  static class Partial extends RuntimeException {
+    Partial() { super("Android refused the gesture after it started; it was cancelled"); }
+  }
 
   static void inject(android.view.InputEvent e) {
     if (!ua.injectInputEvent(e, true)) throw new Refused();
@@ -273,7 +285,7 @@ public class Dump {
       }
       if (result.length() == 0) Thread.sleep(100);
     }
-    if (result.length() == 0) throw new IllegalStateException("no accessible active window");
+    // No window yet (launch, keyguard) is a state to wait through, not a failure.
     return new JSONObject().put("version", 1).put("windows", result).put("seq", seq).toString();
   }
 
