@@ -582,7 +582,7 @@ async function main([cmd, ...raw]) {
   }
 }
 
-export { main, adb, quote, formatNode, parseAudio }
+export { main, adb, quote, formatNode, parseAudio, parseSteps, runSteps, pkgArg }
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main(process.argv.slice(2)).catch((e) => {
     console.error(String(e.message).trim())

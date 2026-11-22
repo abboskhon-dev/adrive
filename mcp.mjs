@@ -1,6 +1,8 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { main, adb } from './adrive.mjs'
+import { main, adb, parseSteps, runSteps, pkgArg } from './adrive.mjs'
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
@@ -128,12 +130,36 @@ const TOOLS = {
     argv: (a) => ['audio', ...opt(a.package, '--package'), ...flag(a.json, '--json')],
     readOnly: true,
   },
+  run: {
+    description: 'Run a list of steps and measure each one: frames and jank, CPU by thread, memory. Returns JSON; on failure, the steps measured so far.',
+    props: {
+      steps: { type: 'array', description: 'Each step is an adrive command as ["tap", "Play"], or {"do": ["wait", "Ready"], "settle": 1} to keep measuring for that many seconds after it. Commands: tap, longpress, slide, type, swipe, scroll, key, wait, gone, launch, stop, open. Waits and settle are capped at 60 seconds.',
+        items: { oneOf: [{ type: 'array', items: { type: 'string' } },
+          { type: 'object', properties: { do: { type: 'array', items: { type: 'string' } }, settle: { type: 'number' } }, required: ['do'] }] } },
+      package: pkg, trace: bool('Record a Perfetto trace of the whole run; the report gives its path'),
+    },
+    required: ['steps'],
+    exec: runTool,
+  },
   clear: {
     description: 'Wipe an app\'s data. Signs the user out.',
     props: { package: str('Package name') }, required: ['package'],
     argv: (a) => ['clear', a.package],
     destructive: true,
   },
+}
+
+// Calls run one at a time, and an agent must not choose where files are written on the host.
+function runTool(a) {
+  const steps = parseSteps(JSON.stringify(a.steps))
+  for (const [i, s] of steps.entries()) {
+    if (s.args[0] === 'shot') throw new Error(`step ${i + 1}: shot is CLI-only; use the screenshot tool`)
+    const rest = s.args.slice(1).filter((x) => x !== '--windows' && x !== '--')
+    const seconds = ['wait', 'gone'].includes(s.args[0]) && rest.length > 1 ? +rest.at(-1) : 0
+    if (s.settle > 60 || seconds > 60) throw new Error(`step ${i + 1}: waits and settle must be <= 60 seconds`)
+  }
+  const trace = a.trace ? join(mkdtempSync(join(tmpdir(), 'adrive-')), 'run.perfetto-trace') : undefined
+  return runSteps(steps, pkgArg(a.package), trace, true)
 }
 
 const tools = Object.entries(TOOLS).map(([name, t]) => ({
@@ -148,7 +174,7 @@ function validate(tool, args) {
   for (const key of tool.required ?? []) if (args[key] === undefined) throw new Error(`${key} is required`)
   for (const [key, value] of Object.entries(args)) {
     const { type, maximum } = tool.props[key]
-    if (typeof value !== type) throw new Error(`${key} must be a ${type}`)
+    if (type === 'array' ? !Array.isArray(value) : typeof value !== type) throw new Error(`${key} must be ${type === 'array' ? 'an' : 'a'} ${type}`)
     if (value > maximum) throw new Error(`${key} must be <= ${maximum}`)
   }
 }
@@ -164,7 +190,10 @@ async function call(name, args = {}) {
   const out = []
   const log = console.log
   console.log = (...parts) => out.push(parts.join(' '))
-  try { await main(tool.argv(args)) } finally { console.log = log }
+  try { await (tool.exec ? tool.exec(args) : main(tool.argv(args))) } catch (e) {
+    // A failed run still printed the steps it measured.
+    throw Object.assign(e, { output: out.join('\n') })
+  } finally { console.log = log }
   return [{ type: 'text', text: out.join('\n') || 'ok' }]
 }
 
@@ -181,7 +210,10 @@ async function handle({ id, method, params }) {
     case 'tools/list': return { tools }
     case 'tools/call':
       try { return { content: await call(params?.name, params?.arguments) } }
-      catch (e) { return { content: [{ type: 'text', text: String(e.message).trim() }], isError: true } }
+      catch (e) {
+        const text = (t) => ({ type: 'text', text: t })
+        return { content: [...(e.output ? [text(e.output)] : []), text(String(e.message).trim())], isError: true }
+      }
     default:
       if (id !== undefined) throw Object.assign(new Error(`method not found: ${method}`), { code: -32601 })
   }

@@ -9,6 +9,7 @@ release retitles it `## <version> — <date>`.
 
 - **MCP server**
   - `adrive mcp` serves every command as a tool over stdio; `screenshot` returns the image.
+  - `run` is a tool too: it takes steps as JSON and returns the per-step report.
 - **Measure a scenario step by step with `adrive run`** (#10)
   - Runs a JSON list of commands and reports frames, jank, CPU per thread and memory for each step.
   - `--trace` records a Perfetto trace of the whole run; `--json` for scripts and agents.
