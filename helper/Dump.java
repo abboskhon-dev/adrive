@@ -6,6 +6,10 @@ import android.net.LocalSocket;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.view.InputDevice;
+import android.view.KeyCharacterMap;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import java.io.BufferedReader;
@@ -25,6 +29,9 @@ public class Dump {
   static UiAutomation ua;
   static boolean connected;
   static long lastRequest;
+  // Counts accessibility events, so a wait can tell whether the screen changed since its last read.
+  static final Object events = new Object();
+  static long eventCount;
 
   public static void main(String[] args) {
     List<String> flags = Arrays.asList(args);
@@ -66,6 +73,9 @@ public class Dump {
     UiAutomation.class.getMethod("connect", int.class).invoke(ua,
         UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
     connected = true;
+    ua.setOnAccessibilityEventListener(event -> {
+      synchronized (events) { eventCount++; events.notifyAll(); }
+    });
   }
 
   static synchronized void disconnect() {
@@ -120,10 +130,19 @@ public class Dump {
             disconnect();
             reply = new JSONObject().put("error", "stale").toString();
             exit = true;
+          } else if (cmd.equals("change")) {
+            // The idle watchdog must not stop the helper while a wait is pending.
+            lastRequest = Math.max(lastRequest, SystemClock.elapsedRealtime() + request.optLong("timeoutMs"));
+            reply = null;
           } else {
             try {
-              reply = snapshot(request.optBoolean("all"), request.optBoolean("windows"));
+              if (cmd.equals("dump")) reply = snapshot(request.optBoolean("all"), request.optBoolean("windows"));
+              else reply = input(cmd, request);
               lastRequest = SystemClock.elapsedRealtime();
+            } catch (IllegalArgumentException e) {
+              reply = new JSONObject().put("error", e.getMessage()).toString();
+            } catch (Refused e) {
+              reply = new JSONObject().put("ok", false).toString();
             } catch (Throwable e) {
               // The connection may be dead; a fresh helper reconnects instead of failing forever.
               disconnect();
@@ -132,15 +151,88 @@ public class Dump {
             }
           }
         }
-        OutputStream out = client.getOutputStream();
-        out.write((reply + "\n").getBytes("UTF-8"));
-        out.flush();
+        if (reply == null) {
+          // A pending wait must not block the action that would end it.
+          LocalSocket waiter = client;
+          client = null;
+          new Thread(() -> answerChange(waiter, request)).start();
+          continue;
+        }
+        write(client, reply);
         if (exit) return;
       } catch (IOException | org.json.JSONException ignored) {
       } finally {
-        client.close();
+        if (client != null) client.close();
       }
     }
+  }
+
+  static void answerChange(LocalSocket client, JSONObject request) {
+    try {
+      write(client, new JSONObject().put("seq", awaitChange(request.optLong("seq"), request.optLong("timeoutMs"))).toString());
+    } catch (Exception ignored) {
+    } finally {
+      synchronized (Dump.class) { lastRequest = Math.max(lastRequest, SystemClock.elapsedRealtime()); }
+      try { client.close(); } catch (IOException ignored) {}
+    }
+  }
+
+  static void write(LocalSocket client, String reply) throws IOException {
+    OutputStream out = client.getOutputStream();
+    out.write((reply + "\n").getBytes("UTF-8"));
+    out.flush();
+  }
+
+  // Any other count, including one from a previous helper, means the screen may have changed.
+  static long awaitChange(long seq, long timeoutMs) throws InterruptedException {
+    long end = SystemClock.uptimeMillis() + timeoutMs;
+    synchronized (events) {
+      for (long left; eventCount == seq && (left = end - SystemClock.uptimeMillis()) > 0; ) events.wait(left);
+      return eventCount;
+    }
+  }
+
+  static String input(String cmd, JSONObject r) throws Exception {
+    switch (cmd) {
+      case "tap": swipe(r.getInt("x"), r.getInt("y"), r.getInt("x"), r.getInt("y"), 0); break;
+      case "swipe": swipe(r.getInt("x1"), r.getInt("y1"), r.getInt("x2"), r.getInt("y2"), r.getLong("ms")); break;
+      case "key": {
+        String name = r.getString("key");
+        int code = name.matches("\\d+") ? Integer.parseInt(name) : KeyEvent.keyCodeFromString(name);
+        if (code <= 0) throw new IllegalArgumentException("unknown key " + name);
+        long t = SystemClock.uptimeMillis();
+        inject(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
+        inject(new KeyEvent(t, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD));
+        break;
+      }
+      default: throw new IllegalArgumentException("unknown command " + cmd);
+    }
+    return new JSONObject().put("ok", true).toString();
+  }
+
+  // Moves every 10 ms, like `input swipe`; a zero duration is a tap.
+  static void swipe(int x1, int y1, int x2, int y2, long ms) throws Exception {
+    long down = SystemClock.uptimeMillis();
+    touch(MotionEvent.ACTION_DOWN, down, down, x1, y1);
+    for (long t = 10; t < ms; t += 10) {
+      SystemClock.sleep(Math.max(0, down + t - SystemClock.uptimeMillis()));
+      touch(MotionEvent.ACTION_MOVE, down, SystemClock.uptimeMillis(), x1 + (x2 - x1) * t / ms, y1 + (y2 - y1) * t / ms);
+    }
+    SystemClock.sleep(Math.max(0, down + ms - SystemClock.uptimeMillis()));
+    touch(MotionEvent.ACTION_UP, down, SystemClock.uptimeMillis(), x2, y2);
+  }
+
+  static void touch(int action, long down, long time, float x, float y) {
+    MotionEvent e = MotionEvent.obtain(down, time, action, x, y, 0);
+    e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+    try { inject(e); } finally { e.recycle(); }
+  }
+
+  // Android refused the event; the connection is fine and the CLI falls back to `input`.
+  static class Refused extends RuntimeException {}
+
+  static void inject(android.view.InputEvent e) {
+    if (!ua.injectInputEvent(e, true)) throw new Refused();
   }
 
   // A replaced helper can still hold the name for a moment while it exits.
@@ -156,6 +248,8 @@ public class Dump {
   }
 
   static String snapshot(boolean all, boolean windows) throws Exception {
+    long seq;
+    synchronized (events) { seq = eventCount; }
     clearCache();
     AccessibilityServiceInfo info = ua.getServiceInfo();
     info.flags |= AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
@@ -180,7 +274,7 @@ public class Dump {
       if (result.length() == 0) Thread.sleep(100);
     }
     if (result.length() == 0) throw new IllegalStateException("no accessible active window");
-    return new JSONObject().put("version", 1).put("windows", result).toString();
+    return new JSONObject().put("version", 1).put("windows", result).put("seq", seq).toString();
   }
 
   // A long-lived connection caches nodes; a snapshot must reflect the screen as it is now.

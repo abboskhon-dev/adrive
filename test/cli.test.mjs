@@ -203,9 +203,38 @@ test('a running daemon answers without starting the helper', async () => {
     assert.deepEqual(JSON.parse(ui.stdout), data)
     assert.deepEqual(daemon.requests, [{ hash: fixtureHash, all: true, windows: true }])
     assert.deepEqual(ui.calls, [['forward', '--list']])
-    const tap = await runWithDaemon(['tap', 'From daemon'], daemon.port)
-    assert.deepEqual(tap.calls, [['forward', '--list'], shellCommand('input', 'tap', 7, 200)])
   } finally { await daemon.close() }
+})
+test('actions go through the daemon, and fall back to input when it cannot inject', async () => {
+  const data = { version: 1, windows: [window([node({ text: 'From daemon', x: 7 })])], seq: 3 }
+  const daemon = await fakeDaemon(data, { ok: true }, data, { error: 'java.lang.IllegalStateException: x', restart: true })
+  try {
+    const tap = await runWithDaemon(['tap', 'From daemon'], daemon.port)
+    assert.equal(tap.status, 0, tap.stderr)
+    assert.deepEqual(daemon.requests[1], { hash: fixtureHash, cmd: 'tap', x: 7, y: 200 })
+    assert.ok(!tap.calls.some((c) => c[1]?.startsWith("'input'")))
+    const fallback = await runWithDaemon(['tap', 'From daemon'], daemon.port)
+    assert.deepEqual(fallback.calls.at(-1), shellCommand('input', 'tap', 7, 200))
+  } finally { await daemon.close() }
+  const bad = await fakeDaemon({ error: 'unknown key KEYCODE_NOPE' })
+  try {
+    const key = await runWithDaemon(['key', 'KEYCODE_NOPE'], bad.port)
+    assert.equal(key.status, 1)
+    assert.match(key.stderr, /unknown key KEYCODE_NOPE/)
+  } finally { await bad.close() }
+})
+test('wait sleeps until the daemon reports a change, and ui --json hides the event count', async () => {
+  const empty = { version: 1, windows: [window([node({ text: 'Loading' })])], seq: 5 }
+  const ready = { version: 1, windows: [window([node({ text: 'Ready' })])], seq: 9 }
+  const daemon = await fakeDaemon(empty, { seq: 9 }, ready)
+  try {
+    const wait = await runWithDaemon(['wait', 'Ready', '5'], daemon.port)
+    assert.equal(wait.status, 0, wait.stderr)
+    assert.deepEqual(daemon.requests.map((r) => r.cmd ?? 'dump'), ['dump', 'change', 'dump'])
+    assert.equal(daemon.requests[1].seq, 5)
+  } finally { await daemon.close() }
+  const shown = await fakeDaemon(ready)
+  try { assert.equal(JSON.parse((await runWithDaemon(['ui', '--json'], shown.port)).stdout).seq, undefined) } finally { await shown.close() }
 })
 test('a missing or stale daemon is started with the current helper, then asked again', async () => {
   const data = { version: 1, windows: [window([node()])] }

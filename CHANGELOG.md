@@ -7,6 +7,9 @@ release retitles it `## <version> — <date>`.
 
 ### Added
 
+- **Faster actions and waits** (#9)
+  - Taps, swipes, scrolls and keys go through the running helper instead of `adb shell input`: about 65 ms faster per tap.
+  - `wait` and `gone` return as soon as the screen changes: a median 75 ms after the label appears instead of 350 ms.
 - **MCP server**
   - `adrive mcp` serves every command as a tool over stdio; `screenshot` returns the image.
   - `run` is a tool too: it takes steps as JSON and returns the per-step report.

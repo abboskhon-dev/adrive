@@ -108,27 +108,29 @@ function forwardedPort(create = true) {
   return Number.isInteger(port) && port > 0 ? port : null
 }
 // Resolves null when nothing answers: adb closes the forward if the helper is not listening.
-function ask(port, request) {
+function ask(port, request, timeout = 15000) {
   return new Promise((resolve) => {
     let data = ''
     const socket = connect({ host: '127.0.0.1', port })
     socket.setEncoding('utf8')
-    socket.setTimeout(15000, () => socket.destroy())
+    socket.setTimeout(timeout, () => socket.destroy())
     socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`))
     socket.on('data', (chunk) => { data += chunk })
     socket.on('error', () => {})
     socket.on('close', () => { try { resolve(JSON.parse(data)) } catch { resolve(null) } })
   })
 }
-async function daemonDump(all, windows) {
+async function daemonAsk(fields) {
   if (process.env.ADRIVE_NO_DAEMON) return null
   const idle = number(process.env.ADRIVE_DAEMON_IDLE ?? 30, 'ADRIVE_DAEMON_IDLE', 1)
   const hash = helperHash()
   try {
     const port = forwardedPort()
     if (!port) return null
-    const request = { hash, all, windows }
-    let reply = await ask(port, request)
+    const request = { hash, ...fields }
+    // A timed-out swipe would be sent again through the fallback.
+    const timeout = 15000 + (fields.ms ?? 0) + (fields.timeoutMs ?? 0)
+    let reply = await ask(port, request, timeout)
     if (!reply || reply.error === 'stale') {
       ensureHelper(hash)
       const pid = +sh(`${helperRun} --serve ${hash} ${idle} >/dev/null 2>&1 & echo $!`).trim()
@@ -136,7 +138,7 @@ async function daemonDump(all, windows) {
       // Wait on the helper, not a timer: a one-shot run while it connects would fight it for UiAutomation.
       for (let i = 1; !reply; i++) {
         await sleep(100)
-        reply = await ask(port, request)
+        reply = await ask(port, request, timeout)
         if (reply) break
         if (i % 5 === 0 && pid > 0 && !sh(`kill -0 ${pid} 2>/dev/null && echo up; true`).includes('up')) return null
         if (i === 150) throw Object.assign(new Error('adrive helper did not start within 15 s; run adrive daemon stop'), { fatal: true })
@@ -146,15 +148,19 @@ async function daemonDump(all, windows) {
   } catch (e) { if (e.fatal) throw e; return null }
 }
 
+// Event count at the last daemon read; a one-shot helper's count means nothing to the daemon.
+let lastSeq
 async function dump(all = false, windows = false) {
-  let result = await daemonDump(all, windows)
+  let result = await daemonAsk({ all, windows })
   if (result?.error) throw new Error(`adrive helper failed: ${result.error}`)
+  lastSeq = result?.seq
   if (!result) {
     ensureHelper()
     const out = sh(`${helperRun}${all ? ' --all' : ''}${windows ? ' --windows' : ''}`)
     try { result = JSON.parse(out) } catch { throw new Error('invalid helper JSON; rebuild with ./build.sh') }
   }
   if (result.version !== 1 || !Array.isArray(result.windows)) throw new Error('unsupported helper output; rebuild with ./build.sh')
+  delete result.seq
   return result
 }
 
@@ -199,13 +205,26 @@ function screenSize() {
 async function waitFor(query, seconds, present, windows) {
   const end = Date.now() + seconds * 1000
   while (Date.now() < end) {
+    const start = Date.now()
     if (!!(await find(query, 0, windows)) === present) return
-    await sleep(300)
+    const left = end - Date.now()
+    // The daemon answers when the screen changes; at most 10 reads a second on animating screens.
+    const changed = lastSeq !== undefined && left > 0 && await daemonAsk({ cmd: 'change', seq: lastSeq, timeoutMs: Math.min(left, 10000) })
+    await sleep(changed ? 100 - (Date.now() - start) : 300)
   }
   throw new Error(`timed out waiting for "${query}" to ${present ? 'appear' : 'disappear'}`)
 }
 
 const KEYS = { back: 4, home: 3, enter: 66, del: 67, tab: 61 }
+
+// One socket round trip through the daemon instead of spawning `input` on the device.
+async function inject(request, ...fallback) {
+  const reply = await daemonAsk(request)
+  if (reply?.ok) return
+  if (reply?.error && !reply.restart) throw new Error(`adrive helper failed: ${reply.error}`)
+  shell('input', ...fallback)
+}
+const swipe = (x1, y1, x2, y2, ms) => inject({ cmd: 'swipe', x1, y1, x2, y2, ms }, 'swipe', x1, y1, x2, y2, ms)
 
 function foreground() {
   const focus = shell('dumpsys', 'window').match(/mCurrentFocus=Window\{[^\n}]*\s([A-Za-z_][\w.]*)\/([^\s}]+)}/)
@@ -460,8 +479,8 @@ async function main([cmd, ...raw]) {
     case 'tap':
     case 'longpress': {
       const p = await point(args.join(' '), nth, windows)
-      if (cmd === 'tap') shell('input', 'tap', p.x, p.y)
-      else shell('input', 'swipe', p.x, p.y, p.x, p.y, 800)
+      if (cmd === 'tap') await inject({ cmd: 'tap', x: p.x, y: p.y }, 'tap', p.x, p.y)
+      else await swipe(p.x, p.y, p.x, p.y, 800)
       return console.log(`${cmd === 'tap' ? 'tapped' : 'long-pressed'} ${p.line ?? `${p.x},${p.y}`}`)
     }
     case 'slide': {
@@ -473,7 +492,7 @@ async function main([cmd, ...raw]) {
       const pad = Math.min(24, (node.right - node.left) / 20)
       const from = Math.round(fraction < 0.5 ? node.right - pad : node.left + pad)
       const to = Math.round(node.left + pad + (node.right - node.left - 2 * pad) * fraction)
-      shell('input', 'swipe', from, node.y, to, node.y, 700)
+      await swipe(from, node.y, to, node.y, 700)
       return console.log(`slid to ${fraction} ${node.line}`)
     }
     case 'type': {
@@ -489,7 +508,7 @@ async function main([cmd, ...raw]) {
     case 'swipe': {
       arity(args, 4, 5, 'swipe <x1> <y1> <x2> <y2> [ms]')
       const coords = args.slice(0, 4).map((v) => number(v, 'coordinate', -2147483648))
-      return shell('input', 'swipe', ...coords, number(args[4] ?? 300, 'duration', 1))
+      return swipe(...coords, number(args[4] ?? 300, 'duration', 1))
     }
     case 'scroll': {
       arity(args, 1, 1, 'scroll up|down|left|right')
@@ -497,13 +516,13 @@ async function main([cmd, ...raw]) {
       const { w, h } = screenSize()
       const [cx, cy, dx, dy] = [w / 2, h / 2, w * 0.3, h * 0.3].map(Math.round)
       const v = { down: [cx, cy + dy, cx, cy - dy], up: [cx, cy - dy, cx, cy + dy], right: [cx + dx, cy, cx - dx, cy], left: [cx - dx, cy, cx + dx, cy] }[args[0]]
-      return shell('input', 'swipe', ...v, 300)
+      return swipe(...v, 300)
     }
     case 'key': {
       arity(args, 1, 1, 'key <name|KEYCODE|number>')
       const key = Object.hasOwn(KEYS, args[0]) ? KEYS[args[0]] : args[0]
       if (!/^KEYCODE_[A-Z0-9_]+$/.test(key)) number(key, 'keycode')
-      return shell('input', 'keyevent', key)
+      return inject({ cmd: 'key', key: String(key) }, 'keyevent', key)
     }
     case 'wait':
     case 'gone':
