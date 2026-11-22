@@ -2,7 +2,7 @@ import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
 import { createHash } from 'node:crypto'
@@ -374,16 +374,25 @@ test('mcp run returns per-step JSON, and the measured steps on failure', () => {
     { id: 1, method: 'tools/call', params: { name: 'run', arguments: { steps: [['key', 'back'], { do: ['tap', 'Delete'], settle: 0 }], package: 'com.example' } } },
     { id: 2, method: 'tools/call', params: { name: 'run', arguments: { steps: [['key', 'back'], ['tap', 'Missing']], package: 'com.example' } } },
     { id: 3, method: 'tools/call', params: { name: 'run', arguments: { steps: 'nope' } } },
+    { id: 4, method: 'tools/call', params: { name: 'run', arguments: { steps: [['shot', '/tmp/x.png']] } } },
+    { id: 5, method: 'tools/call', params: { name: 'run', arguments: { steps: [['wait', '--windows', '--', 'x', '61']] } } },
+    { id: 6, method: 'tools/call', params: { name: 'run', arguments: { steps: [{ do: ['key', 'back'], settle: 61 }] } } },
+    { id: 7, method: 'tools/call', params: { name: 'run', arguments: { steps: [['key', 'back']], package: 'com.example', trace: true } } },
   ].map((m) => JSON.stringify({ jsonrpc: '2.0', ...m })).join('\n')
   writeFileSync(callsFile, '')
   rmSync(`${callsFile}.n`, { force: true })
   const result = ok(spawnSync(process.execPath, [join(dir, 'adrive.mjs'), 'mcp'], {
     input: messages, encoding: 'utf8', timeout: 5000, env: environment({ SAMPLE: sampleOut([1, 1], 1000, 5) }) }))
-  const [passed, failed, invalid] = result.stdout.trim().split('\n').map(JSON.parse)
+  const [passed, failed, invalid, shot, wait, settle, traced] = result.stdout.trim().split('\n').map(JSON.parse)
   assert.deepEqual(JSON.parse(passed.result.content[0].text).steps.map((s) => s.frames.total), [5, 5])
   assert.equal(failed.result.isError, true)
-  const [report, error] = failed.result.content[0].text.split('\n')
-  assert.equal(JSON.parse(report).steps.length, 2)
-  assert.match(error, /step 2 failed: no element matches "Missing"/)
+  assert.equal(JSON.parse(failed.result.content[0].text).steps.length, 2)
+  assert.match(failed.result.content[1].text, /step 2 failed: no element matches "Missing"/)
   assert.equal(invalid.result.content[0].text, 'steps must be an array')
+  assert.match(shot.result.content[0].text, /shot is CLI-only/)
+  for (const r of [wait, settle]) assert.match(r.result.content[0].text, /<= 60 seconds/)
+  const tracePath = JSON.parse(traced.result.content[0].text).trace
+  assert.ok(tracePath.startsWith(tmpdir()))
+  assert.equal(readFileSync(tracePath, 'utf8'), 'trace')
+  rmSync(dirname(tracePath), { recursive: true })
 })
