@@ -79,7 +79,7 @@ Element matching is case-insensitive: exact text, description, or resource ID fi
 
 ## MCP server
 
-`adrive mcp` serves every command as a tool over stdio, for Claude Code, Cursor, and other MCP clients. `screenshot` returns the image instead of a file path; `daemon` is CLI-only. Calls run one at a time, since they share one device.
+`adrive mcp` serves every command as a tool over stdio, for Claude Code, Cursor, and other MCP clients. `screenshot` returns the image instead of a file path, `run` takes its steps as a JSON array and returns the JSON report (with the steps measured so far when one fails), and `daemon` is CLI-only. Calls run one at a time, since they share one device.
 
 ```sh
 claude mcp add adrive -- adrive mcp

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { main, adb } from './adrive.mjs'
+import { main, adb, parseSteps, runSteps, pkgArg } from './adrive.mjs'
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
@@ -128,6 +128,17 @@ const TOOLS = {
     argv: (a) => ['audio', ...opt(a.package, '--package'), ...flag(a.json, '--json')],
     readOnly: true,
   },
+  run: {
+    description: 'Run a list of steps and measure each one: frames and jank, CPU by thread, memory. Returns JSON; on failure, the steps measured so far.',
+    props: {
+      steps: { type: 'array', description: 'Each step is an adrive command as ["tap", "Play"], or {"do": ["wait", "Ready"], "settle": 1} to keep measuring for that many seconds after it. Commands: tap, longpress, slide, type, swipe, scroll, key, wait, gone, shot, launch, stop, open.',
+        items: { oneOf: [{ type: 'array', items: { type: 'string' } },
+          { type: 'object', properties: { do: { type: 'array', items: { type: 'string' } }, settle: { type: 'number' } }, required: ['do'] }] } },
+      package: pkg, trace: str('Save a Perfetto trace of the whole run to this path on the host'),
+    },
+    required: ['steps'],
+    exec: (a) => runSteps(parseSteps(JSON.stringify(a.steps)), pkgArg(a.package), a.trace, true),
+  },
   clear: {
     description: 'Wipe an app\'s data. Signs the user out.',
     props: { package: str('Package name') }, required: ['package'],
@@ -148,7 +159,7 @@ function validate(tool, args) {
   for (const key of tool.required ?? []) if (args[key] === undefined) throw new Error(`${key} is required`)
   for (const [key, value] of Object.entries(args)) {
     const { type, maximum } = tool.props[key]
-    if (typeof value !== type) throw new Error(`${key} must be a ${type}`)
+    if (type === 'array' ? !Array.isArray(value) : typeof value !== type) throw new Error(`${key} must be ${type === 'array' ? 'an' : 'a'} ${type}`)
     if (value > maximum) throw new Error(`${key} must be <= ${maximum}`)
   }
 }
@@ -164,7 +175,10 @@ async function call(name, args = {}) {
   const out = []
   const log = console.log
   console.log = (...parts) => out.push(parts.join(' '))
-  try { await main(tool.argv(args)) } finally { console.log = log }
+  try { await (tool.exec ? tool.exec(args) : main(tool.argv(args))) } catch (e) {
+    // A failed run still printed the steps it measured.
+    throw new Error([...out, e.message].join('\n'))
+  } finally { console.log = log }
   return [{ type: 'text', text: out.join('\n') || 'ok' }]
 }
 

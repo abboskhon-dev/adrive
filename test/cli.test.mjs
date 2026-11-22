@@ -369,3 +369,21 @@ test('a failed measurement still stops the trace and reports earlier steps', () 
     assert.ok(result.calls.some((c) => c[1]?.startsWith('kill -TERM 777')), fail)
   }
 })
+test('mcp run returns per-step JSON, and the measured steps on failure', () => {
+  const messages = [
+    { id: 1, method: 'tools/call', params: { name: 'run', arguments: { steps: [['key', 'back'], { do: ['tap', 'Delete'], settle: 0 }], package: 'com.example' } } },
+    { id: 2, method: 'tools/call', params: { name: 'run', arguments: { steps: [['key', 'back'], ['tap', 'Missing']], package: 'com.example' } } },
+    { id: 3, method: 'tools/call', params: { name: 'run', arguments: { steps: 'nope' } } },
+  ].map((m) => JSON.stringify({ jsonrpc: '2.0', ...m })).join('\n')
+  writeFileSync(callsFile, '')
+  rmSync(`${callsFile}.n`, { force: true })
+  const result = ok(spawnSync(process.execPath, [join(dir, 'adrive.mjs'), 'mcp'], {
+    input: messages, encoding: 'utf8', timeout: 5000, env: environment({ SAMPLE: sampleOut([1, 1], 1000, 5) }) }))
+  const [passed, failed, invalid] = result.stdout.trim().split('\n').map(JSON.parse)
+  assert.deepEqual(JSON.parse(passed.result.content[0].text).steps.map((s) => s.frames.total), [5, 5])
+  assert.equal(failed.result.isError, true)
+  const [report, error] = failed.result.content[0].text.split('\n')
+  assert.equal(JSON.parse(report).steps.length, 2)
+  assert.match(error, /step 2 failed: no element matches "Missing"/)
+  assert.equal(invalid.result.content[0].text, 'steps must be an array')
+})
