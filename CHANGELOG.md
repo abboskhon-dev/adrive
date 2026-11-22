@@ -33,3 +33,4 @@ release retitles it `## <version> — <date>`.
 
 - Contributing guide, changelog, issue and PR templates (#3).
 - Benchmark of tree reads against `uiautomator dump`, Maestro and Appium on an animating app, with results in the README (#8).
+- CI: tests on Node 18–24 (Linux, macOS), helper build, and an emulator smoke test on API 26, 29, 33, 35 and 36.
