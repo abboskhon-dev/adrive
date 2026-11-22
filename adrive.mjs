@@ -40,6 +40,7 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   open <url>                     open a deep link
   clear <pkg>                    wipe app data (signs out)
   daemon status|stop             the helper stays up 30 s after a command; stop frees the device for other tools
+  mcp                            run as an MCP server over stdio
 
   ADRIVE_NO_DAEMON=1 runs the helper once per command. ADRIVE_DAEMON_IDLE=<seconds> changes the 30 s.`
 
@@ -445,6 +446,9 @@ async function main([cmd, ...raw]) {
       if (!reply?.ok) return console.log('not running')
       return console.log(args[0] === 'stop' ? 'stopped' : `running (pid ${reply.pid}, exits after ${reply.idleSeconds} s idle)`)
     }
+    case 'mcp':
+      arity(args, 0, 0, 'mcp')
+      return (await import('./mcp.mjs')).serve()
     case undefined:
     case 'help':
     case '--help':
@@ -454,7 +458,7 @@ async function main([cmd, ...raw]) {
   }
 }
 
-export { main, quote, formatNode, parseAudio }
+export { main, adb, quote, formatNode, parseAudio }
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main(process.argv.slice(2)).catch((e) => {
     console.error(String(e.message).trim())

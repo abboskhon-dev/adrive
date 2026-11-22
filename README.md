@@ -76,6 +76,16 @@ Element matching is case-insensitive: exact text, description, or resource ID fi
 
 `type` supports printable ASCII, including literal `%s`, quotes, and shell punctuation. Unicode and newlines are rejected before typing because Android's key-event based `input text` is not a general Unicode input method. Literal percent signs are sent separately to avoid Android's `%s` substitution.
 
+## MCP server
+
+`adrive mcp` serves every command as a tool over stdio, for Claude Code, Cursor, and other MCP clients. `screenshot` returns the image instead of a file path; `daemon` is CLI-only. Calls run one at a time, since they share one device.
+
+```sh
+claude mcp add adrive -- adrive mcp
+```
+
+Other clients take `{"command": "adrive", "args": ["mcp"]}`. Set `ANDROID_SERIAL` in the server's environment when several devices are connected.
+
 ## Windows and output
 
 By default, inspection and matching use the active root. Add `--windows` to `ui`, `tap`, `longpress`, `slide`, `wait`, or `gone` to include interactive windows such as the keyboard. Windows retain Android's descending Z-order; exact matches still take precedence over substring matches. `--all` includes visible unlabeled/non-actionable nodes. An app must expose accessibility nodes; custom canvas pixels are not automatically recognizable controls.

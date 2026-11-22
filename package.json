@@ -2,7 +2,7 @@
   "name": "adb-drive",
   "version": "0.1.0",
   "description": "Inspect and drive Android apps over adb, release builds included",
-  "keywords": ["android", "adb", "automation", "accessibility", "cli"],
+  "keywords": ["android", "adb", "automation", "accessibility", "cli", "mcp"],
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -14,6 +14,7 @@
   },
   "files": [
     "adrive.mjs",
+    "mcp.mjs",
     "build.sh",
     "helper/Dump.java",
     "helper/build/classes.dex"
