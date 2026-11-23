@@ -33,6 +33,8 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
 
   --package defaults to the foreground app.
   Element commands accept --windows; tap/longpress/slide accept --nth N.
+  tap, longpress, slide, type, swipe, scroll and key wait up to 2 s for the screen to settle and print what
+  changed (appeared:, gone:, changed:); --quiet skips that, --json prints it as data. type takes them before --.
   Use -- before literal arguments that begin with --.
   log [regex] [--package pkg] [--lines N]  recent logcat lines from the app's process (default 200)
   log-clear                      clear logcat, to read only what happens next
@@ -153,6 +155,8 @@ async function daemonAsk(fields) {
 
 // Event count at the last daemon read; a one-shot helper's count means nothing to the daemon.
 let lastSeq
+// The last read, so an action reuses its target lookup as the screen before.
+let recent = null
 async function dump(all = false, windows = false) {
   let result = await daemonAsk({ all, windows })
   if (result?.error) throw new Error(`adrive helper failed: ${result.error}`)
@@ -164,6 +168,7 @@ async function dump(all = false, windows = false) {
   }
   if (result.version !== 1 || !Array.isArray(result.windows)) throw new Error('unsupported helper output; rebuild with ./build.sh')
   delete result.seq
+  if (!all) recent = { windows, data: result }
   return result
 }
 
@@ -217,11 +222,12 @@ async function look(windows) {
   writeFileSync(refsFile(), JSON.stringify({ windows, refs }))
   return refs
 }
-function formatRef(n, i) {
+function describe(n) {
   const label = n.text || n.desc || n.id.split('/').at(-1)
-  return [`[${i + 1}]`, n.class.split('.').at(-1), ...(label ? [JSON.stringify(label)] : []),
+  return [n.class.split('.').at(-1), ...(label ? [JSON.stringify(label)] : []),
     ...nodeFlags(n, ['editable', 'scrollable', 'selected'])].join(' ')
 }
+const formatRef = (n, i) => `[${i + 1}] ${describe(n)}`
 async function resolveRef(ref, saved, nth, windows) {
   if (nth !== undefined) throw new Error('--nth does not apply to refs')
   if (windows !== saved.windows) throw new Error(`@${ref} is from \`adrive look${saved.windows ? ' --windows' : ''}\`; pass the same --windows, or look again`)
@@ -265,6 +271,71 @@ async function waitFor(query, seconds, present, windows) {
     await sleep(changed ? 100 - (Date.now() - start) : 300)
   }
   throw new Error(`timed out waiting for "${query}" to ${present ? 'appear' : 'disappear'}`)
+}
+
+const SETTLE_MS = 2000, QUIET_MS = 300
+const ACTIONS = new Set(['tap', 'longpress', 'slide', 'type', 'swipe', 'scroll', 'key'])
+const box = (n) => [n.class, n.id, n.left, n.top, n.right, n.bottom].join('|')
+const nodeKey = (n) => `${box(n)}|${n.text}|${n.desc}|${!!n.checked}|${!!n.selected}`
+const nodesOf = (data) => data.windows.flatMap((w) => w.nodes)
+const layout = (nodes) => nodes.map(box).sort().join('\n')
+// Settled: no accessibility event for QUIET_MS, or the same layout for QUIET_MS while labels animate.
+async function settle(windows, start) {
+  let data = await dump(false, windows), nodes = nodesOf(data), stable = Date.now()
+  const flips = new Map()
+  let reads = 0
+  const done = (settled) => ({ data, nodes, settled, animating: new Set([...flips].filter(([, c]) => c > 1).map(([b]) => b)) })
+  while (Date.now() - start < SETTLE_MS) {
+    const seq = lastSeq, left = SETTLE_MS - (Date.now() - start)
+    if (seq !== undefined && (await daemonAsk({ cmd: 'change', seq, timeoutMs: Math.min(QUIET_MS, left) }))?.seq === seq) return done(left >= QUIET_MS)
+    if (seq === undefined) await sleep(Math.min(100, left))
+    data = await dump(false, windows)
+    const next = nodesOf(data), last = new Set(nodes.map(nodeKey))
+    if (layout(next) !== layout(nodes)) stable = Date.now()
+    for (const n of next) if (!last.has(nodeKey(n))) flips.set(box(n), (flips.get(box(n)) ?? 0) + 1)
+    nodes = next
+    // Two reads, so a label changing on every read is seen twice and counted as animating.
+    if (++reads >= 2 && Date.now() - stable >= QUIET_MS) return done(true)
+  }
+  return done(false)
+}
+function screenDiff(beforeData, { data, nodes, settled, animating }) {
+  const keyed = (list) => new Map(list.map((n) => [nodeKey(n), n]))
+  const was = keyed(nodesOf(beforeData)), now = keyed(nodes)
+  const pkg = data.windows[0]?.package
+  let appeared = [...now].filter(([k]) => !was.has(k)).map(([, n]) => n)
+  let gone = [...was].filter(([k]) => !now.has(k)).map(([, n]) => n)
+  // A label that changed more than once while settling is an animation, not a result.
+  const changed = []
+  for (const to of appeared) {
+    const from = gone.find((g) => box(g) === box(to))
+    if (from) changed.push({ from, to })
+  }
+  const paired = new Set(changed.flatMap((c) => [c.from, c.to]))
+  appeared = appeared.filter((n) => !paired.has(n))
+  gone = gone.filter((n) => !paired.has(n))
+  return { settled, ...(pkg !== beforeData.windows[0]?.package && { screen: pkg ?? null }),
+    appeared, gone, changed: changed.filter((c) => !animating.has(box(c.to))) }
+}
+// A new screen would list every node; the full lists stay in --json.
+function capped(list, name, line) {
+  const out = list.slice(0, 10).map((x) => `${name}: ${line(x)}`)
+  if (list.length > 10) out.push(`${name}: ${list.length - 10} more`)
+  return out
+}
+function changeTo({ from, to }) {
+  const parts = from.text !== to.text || from.desc !== to.desc ? [JSON.stringify(to.text || to.desc)] : []
+  if (!!from.checked !== !!to.checked) parts.push(to.checked ? 'checked' : 'unchecked')
+  if (!!from.selected !== !!to.selected) parts.push(to.selected ? 'selected' : 'not selected')
+  return parts.join(' ')
+}
+function formatDiff(d) {
+  const lines = [...(d.screen !== undefined ? [`screen: ${d.screen ?? 'no window'}`] : []),
+    ...capped(d.appeared, 'appeared', describe), ...capped(d.gone, 'gone', describe),
+    ...capped(d.changed, 'changed', (c) => `${describe(c.from)} -> ${changeTo(c)}`)]
+  if (!lines.length) lines.push('no change')
+  if (!d.settled) lines.push(`still changing after ${SETTLE_MS / 1000} s`)
+  return lines.join('\n')
 }
 
 const KEYS = { back: 4, home: 3, enter: 66, del: 67, tab: 61 }
@@ -399,8 +470,11 @@ function formatStep(s) {
   return lines.join('\n')
 }
 
+// Settle reads would add accessibility work to the app's measured CPU and frames.
+let measuring = false
 async function runSteps(steps, pkg, trace, json) {
   const tracer = trace && startTrace(pkg)
+  measuring = true
   const results = []
   let failure
   // Whatever fails, the trace is stopped and the steps measured so far are reported.
@@ -421,6 +495,7 @@ async function runSteps(steps, pkg, trace, json) {
       if (error) { failure = new Error(`step ${i + 1} failed: ${error.message}`); break }
     }
   } catch (e) { failure = e }
+  measuring = false
   if (tracer) {
     try { await stopTrace(tracer, trace) } catch (e) {
       failure = new Error(failure ? `${failure.message}; ${e.message}` : e.message)
@@ -501,6 +576,71 @@ function formatAudio(pkg, pids, threads) {
   return lines.join('\n')
 }
 
+const nthFlag = (flags) => flags['--nth'] === undefined ? undefined : number(flags['--nth'], '--nth')
+// Returns the line to print, or null.
+async function act(cmd, args, nth, windows, ready = async () => {}) {
+  switch (cmd) {
+    case 'tap':
+    case 'longpress': {
+      const p = await point(args.join(' '), nth, windows)
+      await ready()
+      if (cmd === 'tap') await inject({ cmd: 'tap', x: p.x, y: p.y }, 'tap', p.x, p.y)
+      else await swipe(p.x, p.y, p.x, p.y, 800)
+      return `${cmd === 'tap' ? 'tapped' : 'long-pressed'} ${p.line ?? `${p.x},${p.y}`}`
+    }
+    case 'slide': {
+      arity(args, 2, Infinity, 'slide <query|@ref> <0..1>')
+      const fraction = number(args.pop(), 'fraction', 0, false)
+      if (fraction > 1) throw new Error('fraction must be <= 1')
+      const node = await point(args.join(' '), nth, windows)
+      if (!node.line || node.right <= node.left) throw new Error('slide requires an element with nonempty bounds')
+      const pad = Math.min(24, (node.right - node.left) / 20)
+      const from = Math.round(fraction < 0.5 ? node.right - pad : node.left + pad)
+      const to = Math.round(node.left + pad + (node.right - node.left - 2 * pad) * fraction)
+      await ready()
+      await swipe(from, node.y, to, node.y, 700)
+      return `slid to ${fraction} ${node.line}`
+    }
+    case 'type': {
+      arity(args, 1, Infinity, 'type <text>')
+      const text = args.join(' ')
+      // Android input text only reliably supports printable ASCII key events.
+      if (/[^\x20-\x7e]/.test(text)) throw new Error('type supports printable ASCII only; Unicode/newlines require an IME')
+      // Isolate every literal percent: Android converts %s to a space per invocation.
+      const chunks = text.split(/(%)/).filter(Boolean)
+      await ready()
+      for (const chunk of chunks) shell('input', 'text', chunk.replace(/ /g, '%s'))
+      return null
+    }
+    case 'swipe': {
+      arity(args, 4, 5, 'swipe <x1> <y1> <x2> <y2> [ms]')
+      const coords = args.slice(0, 4).map((v) => number(v, 'coordinate', -2147483648))
+      const ms = number(args[4] ?? 300, 'duration', 1)
+      await ready()
+      await swipe(...coords, ms)
+      return null
+    }
+    case 'scroll': {
+      arity(args, 1, 1, 'scroll up|down|left|right')
+      if (!['up', 'down', 'left', 'right'].includes(args[0])) throw new Error('scroll up|down|left|right')
+      const { w, h } = screenSize()
+      const [cx, cy, dx, dy] = [w / 2, h / 2, w * 0.3, h * 0.3].map(Math.round)
+      const v = { down: [cx, cy + dy, cx, cy - dy], up: [cx, cy - dy, cx, cy + dy], right: [cx + dx, cy, cx - dx, cy], left: [cx - dx, cy, cx + dx, cy] }[args[0]]
+      await ready()
+      await swipe(...v, 300)
+      return null
+    }
+    case 'key': {
+      arity(args, 1, 1, 'key <name|KEYCODE|number>')
+      const key = Object.hasOwn(KEYS, args[0]) ? KEYS[args[0]] : args[0]
+      if (!/^KEYCODE_[A-Z0-9_]+$/.test(key)) number(key, 'keycode')
+      await ready()
+      await inject({ cmd: 'key', key: String(key) }, 'keyevent', key)
+      return null
+    }
+  }
+}
+
 async function main([cmd, ...raw]) {
   const element = ['tap', 'longpress', 'slide', 'wait', 'gone'].includes(cmd)
   const allowed = element ? { '--windows': false } : {}
@@ -512,11 +652,30 @@ async function main([cmd, ...raw]) {
   if (cmd === 'log') allowed['--lines'] = true
   if (cmd === 'perf') allowed['--reset'] = false
   if (cmd === 'run') Object.assign(allowed, { '--package': true, '--trace': true, '--json': false })
-  // Text is literal, including --nth. An initial -- is an optional delimiter.
-  const { args, flags } = cmd === 'type'
-    ? { args: raw[0] === '--' ? raw.slice(1) : raw, flags: {} }
-    : options(raw, allowed)
-  const nth = flags['--nth'] === undefined ? undefined : number(flags['--nth'], '--nth')
+  if (ACTIONS.has(cmd)) Object.assign(allowed, { '--quiet': false, '--json': false })
+  // Text is literal, including --nth; options go before an explicit --.
+  const cut = raw.indexOf('--'), lead = raw.slice(0, Math.max(cut, 0))
+  const { args, flags } = cmd !== 'type' ? options(raw, allowed)
+    : cut >= 0 && lead.every((a) => Object.hasOwn(allowed, a)) ? { args: raw.slice(cut + 1), flags: options(lead, allowed).flags }
+    : { args: raw, flags: {} }
+  if (ACTIONS.has(cmd)) {
+    if (flags['--quiet'] && flags['--json']) throw new Error('--quiet and --json cannot be combined')
+    if (flags['--quiet'] || measuring) {
+      const line = await act(cmd, args, nthFlag(flags), !!flags['--windows'])
+      return line && console.log(line)
+    }
+    const windows = !!flags['--windows']
+    let before, start
+    recent = null
+    const line = await act(cmd, args, nthFlag(flags), windows, async () => {
+      before = recent?.windows === windows ? recent.data : await dump(false, windows)
+      start = Date.now()
+    })
+    const d = screenDiff(before, await settle(windows, start))
+    if (flags['--json']) return console.log(JSON.stringify({ ...(line && { done: line }), ...d }))
+    if (line) console.log(line)
+    return console.log(formatDiff(d))
+  }
   const windows = !!flags['--windows']
   switch (cmd) {
     case 'ui': {
@@ -535,54 +694,6 @@ async function main([cmd, ...raw]) {
       const refs = await look(windows)
       if (!refs.length) throw new Error('no actionable elements; is the screen on and unlocked? try `adrive ui`')
       return console.log(refs.map(formatRef).join('\n'))
-    }
-    case 'tap':
-    case 'longpress': {
-      const p = await point(args.join(' '), nth, windows)
-      if (cmd === 'tap') await inject({ cmd: 'tap', x: p.x, y: p.y }, 'tap', p.x, p.y)
-      else await swipe(p.x, p.y, p.x, p.y, 800)
-      return console.log(`${cmd === 'tap' ? 'tapped' : 'long-pressed'} ${p.line ?? `${p.x},${p.y}`}`)
-    }
-    case 'slide': {
-      arity(args, 2, Infinity, 'slide <query|@ref> <0..1>')
-      const fraction = number(args.pop(), 'fraction', 0, false)
-      if (fraction > 1) throw new Error('fraction must be <= 1')
-      const node = await point(args.join(' '), nth, windows)
-      if (!node.line || node.right <= node.left) throw new Error('slide requires an element with nonempty bounds')
-      const pad = Math.min(24, (node.right - node.left) / 20)
-      const from = Math.round(fraction < 0.5 ? node.right - pad : node.left + pad)
-      const to = Math.round(node.left + pad + (node.right - node.left - 2 * pad) * fraction)
-      await swipe(from, node.y, to, node.y, 700)
-      return console.log(`slid to ${fraction} ${node.line}`)
-    }
-    case 'type': {
-      arity(args, 1, Infinity, 'type <text>')
-      const text = args.join(' ')
-      // Android input text only reliably supports printable ASCII key events.
-      if (/[^\x20-\x7e]/.test(text)) throw new Error('type supports printable ASCII only; Unicode/newlines require an IME')
-      // Isolate every literal percent: Android converts %s to a space per invocation.
-      const chunks = text.split(/(%)/).filter(Boolean)
-      for (const chunk of chunks) shell('input', 'text', chunk.replace(/ /g, '%s'))
-      return
-    }
-    case 'swipe': {
-      arity(args, 4, 5, 'swipe <x1> <y1> <x2> <y2> [ms]')
-      const coords = args.slice(0, 4).map((v) => number(v, 'coordinate', -2147483648))
-      return swipe(...coords, number(args[4] ?? 300, 'duration', 1))
-    }
-    case 'scroll': {
-      arity(args, 1, 1, 'scroll up|down|left|right')
-      if (!['up', 'down', 'left', 'right'].includes(args[0])) throw new Error('scroll up|down|left|right')
-      const { w, h } = screenSize()
-      const [cx, cy, dx, dy] = [w / 2, h / 2, w * 0.3, h * 0.3].map(Math.round)
-      const v = { down: [cx, cy + dy, cx, cy - dy], up: [cx, cy - dy, cx, cy + dy], right: [cx + dx, cy, cx - dx, cy], left: [cx - dx, cy, cx + dx, cy] }[args[0]]
-      return swipe(...v, 300)
-    }
-    case 'key': {
-      arity(args, 1, 1, 'key <name|KEYCODE|number>')
-      const key = Object.hasOwn(KEYS, args[0]) ? KEYS[args[0]] : args[0]
-      if (!/^KEYCODE_[A-Z0-9_]+$/.test(key)) number(key, 'keycode')
-      return inject({ cmd: 'key', key: String(key) }, 'keyevent', key)
     }
     case 'wait':
     case 'gone':
