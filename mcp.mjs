@@ -14,7 +14,7 @@ const query = str('Text, content description, or resource ID; exact match first,
 const nth = num('Zero-based index among matches (default 0)')
 const windows = bool('Also search the keyboard, system dialogs, and overlays')
 const pkg = str('Package name; defaults to the foreground app')
-const target = str('Element query, or "x,y" screen coordinates')
+const target = str('Element query, "x,y" screen coordinates, or "@3" for a ref from look')
 
 const flag = (on, name) => (on ? [name] : [])
 const opt = (value, name) => (value === undefined ? [] : [name, String(value)])
@@ -36,6 +36,12 @@ const TOOLS = {
     argv: (a) => ['ui', ...flag(a.all, '--all'), ...flag(a.windows, '--windows'), ...flag(a.json, '--json')],
     readOnly: true,
   },
+  look: {
+    description: 'List actionable elements with numbered refs, like [3] Button "Play". Pass "@3" as the target of tap, longpress or slide. Refs expire when the element moves; look again.',
+    props: { windows },
+    argv: (a) => ['look', ...flag(a.windows, '--windows')],
+    readOnly: true,
+  },
   tap: {
     description: 'Tap an element or coordinates. Fails without touching the device if nothing matches.',
     props: { target, nth, windows }, required: ['target'],
@@ -48,7 +54,7 @@ const TOOLS = {
   },
   slide: {
     description: 'Drag a slider to a fraction of its width.',
-    props: { query, fraction: num('0 to 1'), nth, windows }, required: ['query', 'fraction'],
+    props: { query: str('Element query, or "@3" for a ref from look'), fraction: num('0 to 1'), nth, windows }, required: ['query', 'fraction'],
     argv: (a) => ['slide', ...element(a), '--', a.query, String(a.fraction)],
   },
   type: {
@@ -133,7 +139,7 @@ const TOOLS = {
   run: {
     description: 'Run a list of steps and measure each one: frames and jank, CPU by thread, memory. Returns JSON; on failure, the steps measured so far.',
     props: {
-      steps: { type: 'array', description: 'Each step is an adrive command as ["tap", "Play"], or {"do": ["wait", "Ready"], "settle": 1} to keep measuring for that many seconds after it. Commands: tap, longpress, slide, type, swipe, scroll, key, wait, gone, launch, stop, open. Waits and settle are capped at 60 seconds.',
+      steps: { type: 'array', description: 'Each step is an adrive command as ["tap", "Play"], or {"do": ["wait", "Ready"], "settle": 1} to keep measuring for that many seconds after it. Commands: look, tap, longpress, slide, type, swipe, scroll, key, wait, gone, launch, stop, open. Waits and settle are capped at 60 seconds.',
         items: { oneOf: [{ type: 'array', items: { type: 'string' } },
           { type: 'object', properties: { do: { type: 'array', items: { type: 'string' } }, settle: { type: 'number' } }, required: ['do'] }] } },
       package: pkg, trace: bool('Record a Perfetto trace of the whole run; the report gives its path'),

@@ -10,6 +10,7 @@ $A current | grep -q com.android.settings
 ADRIVE_NO_DAEMON=1 $A ui | grep -q .
 $A ui --json | node -e "$has_windows"
 $A ui --windows --json | node -e "$has_windows"
+$A look | grep -q '^\[1\] '
 $A daemon status | grep -q '^running'
 $A key home
 $A daemon stop

@@ -50,7 +50,7 @@ const node = (fields = {}) => ({ class: 'android.widget.Button', text: 'Delete',
 const window = (nodes, id = 1) => ({ id, type: 1, layer: 0, package: 'com.example', nodes })
 const environment = (extra) => ({ ...process.env, PATH: `${dir}:${process.env.PATH}`, CALLS: callsFile,
   DUMP: JSON.stringify({ version: 1, windows: [window([node()])] }),
-  FOCUS: 'mCurrentFocus=Window{a u0 com.example/.MainActivity}', ADRIVE_NO_DAEMON: '1', ...extra })
+  FOCUS: 'mCurrentFocus=Window{a u0 com.example/.MainActivity}', ADRIVE_NO_DAEMON: '1', XDG_CACHE_HOME: join(dir, 'cache'), ...extra })
 const recorded = () => readFileSync(callsFile, 'utf8').split('\n').filter(Boolean).map(JSON.parse)
 function run(args, extra = {}) {
   writeFileSync(callsFile, '')
@@ -321,12 +321,14 @@ test('mcp lists tools and runs them with literal arguments', () => {
     { id: 5, method: 'tools/call', params: { name: 'tap', arguments: { target: 'delete', nth: '1' } } },
     { id: 6, method: 'missing' },
     { id: 7, method: 'tools/call', params: { name: 'wait', arguments: { query: 'x', seconds: 61 } } },
+    { id: 8, method: 'tools/call', params: { name: 'look', arguments: {} } },
+    { id: 9, method: 'tools/call', params: { name: 'tap', arguments: { target: '@1' } } },
   ].map((m) => JSON.stringify({ jsonrpc: '2.0', ...m })).join('\n')
   writeFileSync(callsFile, '')
   const result = ok(spawnSync(process.execPath, [join(dir, 'adrive.mjs'), 'mcp'], {
     input: messages, encoding: 'utf8', timeout: 5000, env: environment() }))
   const replies = result.stdout.trim().split('\n').map(JSON.parse)
-  assert.deepEqual(replies.map((r) => r.id), [1, 2, 3, 4, 5, 6, 7])
+  assert.deepEqual(replies.map((r) => r.id), [1, 2, 3, 4, 5, 6, 7, 8, 9])
   assert.equal(replies[0].result.protocolVersion, '2025-06-18')
   assert.ok(replies[1].result.tools.some((t) => t.name === 'clear' && t.annotations.destructiveHint))
   assert.match(replies[2].result.content[0].text, /no element matches "--nth"/)
@@ -335,7 +337,9 @@ test('mcp lists tools and runs them with literal arguments', () => {
   assert.equal(replies[4].result.content[0].text, 'nth must be a number')
   assert.equal(replies[5].error.code, -32601)
   assert.equal(replies[6].result.content[0].text, 'seconds must be <= 60')
-  assert.deepEqual(recorded().filter((c) => c[0] === 'shell' && c[1].startsWith("'input'")), [shellCommand('input', 'tap', 100, 200)])
+  assert.equal(replies[7].result.content[0].text, '[1] Button "Delete"')
+  assert.match(replies[8].result.content[0].text, /^tapped Button text="Delete"/)
+  assert.deepEqual(recorded().filter((c) => c[0] === 'shell' && c[1].startsWith("'input'")), [shellCommand('input', 'tap', 100, 200), shellCommand('input', 'tap', 100, 200)])
 })
 
 const stepsFile = join(dir, 'steps.json')
@@ -465,4 +469,34 @@ test('mcp answers non-object messages and keeps serving', () => {
   assert.equal(first.error.code, -32600)
   assert.equal(second.error.code, -32600)
   assert.deepEqual(ping.result, {})
+})
+
+test('look numbers actionable elements, and a ref acts only while the element is unmoved', () => {
+  const serial = `look-${process.pid}`
+  const play = node({ text: 'Play', x: 10, y: 20 })
+  const screen = (nodes) => ({ DUMP: JSON.stringify({ version: 1, windows: [window(nodes)] }), SERIALNO: serial, ANDROID_SERIAL: '' })
+  const label = node({ class: 'android.widget.TextView', text: 'Title', clickable: false })
+  const field = node({ class: 'android.widget.EditText', text: '', id: 'app:id/name', clickable: false, editable: true })
+  const seek = node({ class: 'android.widget.SeekBar', text: '', clickable: false, left: 0, right: 1000, y: 500 })
+  const taps = (result) => result.calls.filter((c) => c[0] === 'shell' && c[1].startsWith("'input'"))
+  // Before any look, @text is still matched as text.
+  assert.deepEqual(ok(run(['tap', '@2024'], screen([node({ text: '@2024', x: 7 })]))).calls.at(-1), shellCommand('input', 'tap', 7, 200))
+  assert.match(run(['tap', '@1'], screen([play])).stderr, /no refs yet and no element matches "@1"/)
+  const look = ok(run(['look'], screen([label, play, node(), field, seek])))
+  assert.equal(look.stdout, '[1] Button "Play"\n[2] Button "Delete"\n[3] EditText "name" editable\n[4] SeekBar\n')
+  assert.deepEqual(ok(run(['tap', '@2'], screen([play, node()]))).calls.at(-1), shellCommand('input', 'tap', 100, 200))
+  assert.deepEqual(ok(run(['slide', '@4', '1'], screen([seek]))).calls.at(-1), shellCommand('input', 'swipe', 24, 500, 976, 500, 700))
+  // A unique ID keeps the ref through a changed label.
+  ok(run(['tap', '@3'], screen([{ ...field, text: 'Ada' }])))
+  for (const [args, now, error] of [
+    [['tap', '@1'], [node({ text: 'Play', left: 60 })], /@1 \[1\] Button "Play" is gone or moved/],
+    [['tap', '@9'], [play], /@9 is not in the last look \(4 refs\)/],
+    [['tap', '@3'], [{ ...field, top: 0 }], /@3 .* is gone or moved/],
+    [['tap', '@3'], [{ ...field, text: 'a' }, { ...field, text: 'b', top: 0 }], /@3 .* is gone or moved/],
+    [['tap', '@1', '--nth', '0'], [play], /--nth does not apply to refs/],
+    [['tap', '@1', '--windows'], [play], /from `adrive look`; pass the same --windows/]]) {
+    const result = run(args, screen(now))
+    assert.match(result.stderr, error)
+    assert.deepEqual(taps(result), [])
+  }
 })
