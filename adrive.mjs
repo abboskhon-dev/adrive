@@ -283,6 +283,7 @@ const layout = (nodes) => nodes.map(box).sort().join('\n')
 async function settle(windows, start) {
   let data = await dump(false, windows), nodes = nodesOf(data), stable = Date.now()
   const flips = new Map()
+  let reads = 0
   const done = (settled) => ({ data, nodes, settled, animating: new Set([...flips].filter(([, c]) => c > 1).map(([b]) => b)) })
   while (Date.now() - start < SETTLE_MS) {
     const seq = lastSeq, left = SETTLE_MS - (Date.now() - start)
@@ -293,7 +294,8 @@ async function settle(windows, start) {
     if (layout(next) !== layout(nodes)) stable = Date.now()
     for (const n of next) if (!last.has(nodeKey(n))) flips.set(box(n), (flips.get(box(n)) ?? 0) + 1)
     nodes = next
-    if (Date.now() - stable >= QUIET_MS) return done(true)
+    // Two reads, so a label changing on every read is seen twice and counted as animating.
+    if (++reads >= 2 && Date.now() - stable >= QUIET_MS) return done(true)
   }
   return done(false)
 }
