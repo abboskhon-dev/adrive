@@ -276,34 +276,34 @@ async function waitFor(query, seconds, present, windows) {
 const SETTLE_MS = 2000, QUIET_MS = 300
 const ACTIONS = new Set(['tap', 'longpress', 'slide', 'type', 'swipe', 'scroll', 'key'])
 const box = (n) => [n.class, n.id, n.left, n.top, n.right, n.bottom].join('|')
-const nodeKey = (n) => `${box(n)}|${n.text}|${n.desc}`
+const nodeKey = (n) => `${box(n)}|${n.text}|${n.desc}|${!!n.checked}|${!!n.selected}`
 const nodesOf = (data) => data.windows.flatMap((w) => w.nodes)
 const layout = (nodes) => nodes.map(box).sort().join('\n')
 // Settled: no accessibility event for QUIET_MS, or the same layout for QUIET_MS while labels animate.
 async function settle(windows, start) {
-  let data = await dump(false, windows), prev = null, nodes = nodesOf(data), stable = Date.now()
+  let data = await dump(false, windows), nodes = nodesOf(data), stable = Date.now()
+  const flips = new Map()
+  const done = (settled) => ({ data, nodes, settled, animating: new Set([...flips].filter(([, c]) => c > 1).map(([b]) => b)) })
   while (Date.now() - start < SETTLE_MS) {
     const seq = lastSeq, left = SETTLE_MS - (Date.now() - start)
-    if (seq !== undefined && (await daemonAsk({ cmd: 'change', seq, timeoutMs: Math.min(QUIET_MS, left) }))?.seq === seq) return { data, nodes, prev, settled: true }
+    if (seq !== undefined && (await daemonAsk({ cmd: 'change', seq, timeoutMs: Math.min(QUIET_MS, left) }))?.seq === seq) return done(left >= QUIET_MS)
     if (seq === undefined) await sleep(Math.min(100, left))
     data = await dump(false, windows)
-    const next = nodesOf(data)
+    const next = nodesOf(data), last = new Set(nodes.map(nodeKey))
     if (layout(next) !== layout(nodes)) stable = Date.now()
-    prev = nodes
+    for (const n of next) if (!last.has(nodeKey(n))) flips.set(box(n), (flips.get(box(n)) ?? 0) + 1)
     nodes = next
-    if (Date.now() - stable >= QUIET_MS) return { data, nodes, prev, settled: true }
+    if (Date.now() - stable >= QUIET_MS) return done(true)
   }
-  return { data, nodes, prev, settled: false }
+  return done(false)
 }
-function screenDiff(beforeData, { data, nodes, prev, settled }) {
+function screenDiff(beforeData, { data, nodes, settled, animating }) {
   const keyed = (list) => new Map(list.map((n) => [nodeKey(n), n]))
   const was = keyed(nodesOf(beforeData)), now = keyed(nodes)
   const pkg = data.windows[0]?.package
   let appeared = [...now].filter(([k]) => !was.has(k)).map(([, n]) => n)
   let gone = [...was].filter(([k]) => !now.has(k)).map(([, n]) => n)
-  // A label still changing between the last two reads is an animation, not a result.
-  const last = prev && keyed(prev)
-  const animating = new Set(prev ? nodes.filter((n) => !last.has(nodeKey(n))).map(box) : [])
+  // A label that changed more than once while settling is an animation, not a result.
   const changed = []
   for (const to of appeared) {
     const from = gone.find((g) => box(g) === box(to))
@@ -321,10 +321,16 @@ function capped(list, name, line) {
   if (list.length > 10) out.push(`${name}: ${list.length - 10} more`)
   return out
 }
+function changeTo({ from, to }) {
+  const parts = from.text !== to.text || from.desc !== to.desc ? [JSON.stringify(to.text || to.desc)] : []
+  if (!!from.checked !== !!to.checked) parts.push(to.checked ? 'checked' : 'unchecked')
+  if (!!from.selected !== !!to.selected) parts.push(to.selected ? 'selected' : 'not selected')
+  return parts.join(' ')
+}
 function formatDiff(d) {
   const lines = [...(d.screen !== undefined ? [`screen: ${d.screen ?? 'no window'}`] : []),
     ...capped(d.appeared, 'appeared', describe), ...capped(d.gone, 'gone', describe),
-    ...capped(d.changed, 'changed', (c) => `${describe(c.from)} -> ${JSON.stringify(c.to.text || c.to.desc)}`)]
+    ...capped(d.changed, 'changed', (c) => `${describe(c.from)} -> ${changeTo(c)}`)]
   if (!lines.length) lines.push('no change')
   if (!d.settled) lines.push(`still changing after ${SETTLE_MS / 1000} s`)
   return lines.join('\n')
@@ -465,8 +471,8 @@ function formatStep(s) {
 // Settle reads would add accessibility work to the app's measured CPU and frames.
 let measuring = false
 async function runSteps(steps, pkg, trace, json) {
-  measuring = true
   const tracer = trace && startTrace(pkg)
+  measuring = true
   const results = []
   let failure
   // Whatever fails, the trace is stopped and the steps measured so far are reported.
@@ -646,10 +652,10 @@ async function main([cmd, ...raw]) {
   if (cmd === 'run') Object.assign(allowed, { '--package': true, '--trace': true, '--json': false })
   if (ACTIONS.has(cmd)) Object.assign(allowed, { '--quiet': false, '--json': false })
   // Text is literal, including --nth; options go before an explicit --.
-  const cut = raw.indexOf('--')
-  const { args, flags } = cmd === 'type'
-    ? cut < 0 ? { args: raw, flags: {} } : { args: raw.slice(cut + 1), flags: options(raw.slice(0, cut), allowed).flags }
-    : options(raw, allowed)
+  const cut = raw.indexOf('--'), lead = raw.slice(0, Math.max(cut, 0))
+  const { args, flags } = cmd !== 'type' ? options(raw, allowed)
+    : cut >= 0 && lead.every((a) => Object.hasOwn(allowed, a)) ? { args: raw.slice(cut + 1), flags: options(lead, allowed).flags }
+    : { args: raw, flags: {} }
   if (ACTIONS.has(cmd)) {
     if (flags['--quiet'] && flags['--json']) throw new Error('--quiet and --json cannot be combined')
     if (flags['--quiet'] || measuring) {

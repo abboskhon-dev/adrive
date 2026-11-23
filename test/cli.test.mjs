@@ -542,4 +542,32 @@ test('type takes options only before an explicit --', () => {
   assert.equal(quiet.stdout, '')
   assert.deepEqual(quiet.calls.filter(isInput), [shellCommand('input', 'text', 'hi')])
   assert.deepEqual(ok(run(['type', '--quiet', 'hi'])).calls.filter(isInput), [shellCommand('input', 'text', '--quiet%shi')])
+  for (const text of [['hello', '--', 'world'], ['--foo', '--', 'x']]) {
+    assert.deepEqual(ok(run(['type', '--quiet', '--', ...text])).calls.filter(isInput), [shellCommand('input', 'text', text.join('%s'))])
+    assert.deepEqual(ok(run(['type', ...text])).calls.filter(isInput), [shellCommand('input', 'text', text.join('%s'))])
+  }
+})
+test('a toggled switch is a change, and the daemon settles once no event arrives', async () => {
+  const mute = (checked) => node({ class: 'android.widget.Switch', text: 'Mute', checkable: true, checked })
+  const before = { version: 1, windows: [window([mute(false)])], seq: 5 }
+  const after = { version: 1, windows: [window([mute(true)])], seq: 7 }
+  const daemon = await fakeDaemon(before, { ok: true }, after, { seq: 7 })
+  try {
+    const tap = await runWithDaemon(['tap', 'Mute'], daemon.port)
+    assert.equal(tap.status, 0, tap.stderr)
+    assert.match(tap.stdout, /\nchanged: Switch "Mute" unchecked -> checked\n$/)
+    assert.deepEqual(daemon.requests.map((r) => r.cmd ?? 'dump'), ['dump', 'tap', 'dump', 'change'])
+    assert.equal(daemon.requests[3].seq, 7)
+  } finally { await daemon.close() }
+})
+test('a change that lands after the first settle read is still reported', async () => {
+  const mute = (checked) => node({ class: 'android.widget.Switch', text: 'Mute', checkable: true, checked })
+  const before = { version: 1, windows: [window([mute(false)])], seq: 5 }
+  const after = { version: 1, windows: [window([mute(true)])], seq: 8 }
+  const daemon = await fakeDaemon(before, { ok: true }, { ...before, seq: 6 }, { seq: 8 }, after, { seq: 8 })
+  try {
+    const tap = await runWithDaemon(['tap', 'Mute'], daemon.port)
+    assert.equal(tap.status, 0, tap.stderr)
+    assert.match(tap.stdout, /\nchanged: Switch "Mute" unchecked -> checked\n$/)
+  } finally { await daemon.close() }
 })
