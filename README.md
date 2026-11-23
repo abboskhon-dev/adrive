@@ -81,6 +81,8 @@ Element matching is case-insensitive: exact text, description, or resource ID fi
 
 `look` numbers the elements you can act on, and `tap`, `longpress` and `slide` take `@N` from the last `look`. A ref fails without touching the device if its element moved or is gone, or if `--windows` differs from the `look`. An element with a unique resource ID keeps its ref when only its text changes, so a live label like `Downloading 42%` still works; in a pager that swaps content under the same ID, `look` again after swiping. Refs are kept per device in `~/.cache/adrive` (or `$XDG_CACHE_HOME/adrive`), so run one driver per device at a time. Until the first `look`, `@2024` is matched as text; after it, as a ref.
 
+`tap`, `longpress`, `slide`, `type`, `swipe`, `scroll` and `key` wait up to 2 s for the screen to settle, then print what changed: `appeared: Button "Ready"`, `gone: TextView "Loading"`, `changed: TextView "taps 1" -> "taps 2"`, or `no change`. Labels that keep changing (a timer) are left out, and `still changing after 2 s` says the layout never settled. `--quiet` prints only the action, `--json` prints the change as data; `type` takes them before an explicit `--` (`adrive type --quiet -- hello`). Steps in `run` stay quiet, so the reads don't add to the measurement.
+
 `type` supports printable ASCII, including literal `%s`, quotes, and shell punctuation. Unicode and newlines are rejected before typing because Android's key-event based `input text` is not a general Unicode input method. Literal percent signs are sent separately to avoid Android's `%s` substitution.
 
 ## MCP server

@@ -22,7 +22,11 @@ const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CALLS, JSON.stringify(args)+'\\n');
 const cmd = args[1] || '';
 if (cmd.includes('--serve')) process.stdout.write(process.env.SERVE_PID || '');
-else if (cmd.includes('app_process')) process.stdout.write(process.env.DUMP);
+else if (cmd.includes('app_process')) {
+  const n = Number(fs.existsSync(process.env.CALLS + '.d') ? fs.readFileSync(process.env.CALLS + '.d', 'utf8') : 0);
+  fs.writeFileSync(process.env.CALLS + '.d', String(n + 1));
+  process.stdout.write(process.env['DUMP' + n] ?? process.env.DUMP);
+}
 else if (args[0] === 'get-serialno') process.stdout.write((process.env.SERIALNO || 'device-1') + '\\n');
 else if (cmd.startsWith('kill -0') && process.env.ALIVE_ONCE) {
   if (!fs.existsSync(process.env.CALLS + '.alive')) { fs.writeFileSync(process.env.CALLS + '.alive', ''); process.stdout.write('up'); }
@@ -55,6 +59,7 @@ const recorded = () => readFileSync(callsFile, 'utf8').split('\n').filter(Boolea
 function run(args, extra = {}) {
   writeFileSync(callsFile, '')
   rmSync(`${callsFile}.n`, { force: true })
+  rmSync(`${callsFile}.d`, { force: true })
   rmSync(`${callsFile}.alive`, { force: true })
   const result = spawnSync(process.execPath, [join(dir, 'adrive.mjs'), ...args], {
     encoding: 'utf8', timeout: 5000, env: environment(extra) })
@@ -92,6 +97,7 @@ async function fakeDaemon(...replies) {
 }
 function ok(result) { assert.equal(result.status, 0, result.stderr); return result }
 const shellCommand = (...args) => ['shell', args.map(quote).join(' ')]
+const isInput = (c) => c[0] === 'shell' && c[1].startsWith("'input'")
 
 test('bad actions fail before invoking adb', () => {
   for (const args of [ ['tap'], ['tap', ''], ['longpress'], ['slide', '0.5'],
@@ -110,12 +116,12 @@ test('UI text never becomes coordinates, IDs, or clickable metadata', () => {
   const text = 'Email @12,34 clickable id=spoof\n"quoted"\\tail'
   const dump = { version: 1, windows: [window([node({ text, clickable: false }), node({ text: 'Other', x: 300 })])] }
   const result = ok(run(['tap', text], { DUMP: JSON.stringify(dump) }))
-  assert.deepEqual(result.calls.at(-1), shellCommand('input', 'tap', 100, 200))
+  assert.deepEqual(result.calls.filter(isInput).at(-1), shellCommand('input', 'tap', 100, 200))
   assert.equal(run(['tap', 'spoof'], { DUMP: JSON.stringify({ version: 1, windows: [window([node({ text: 'Other', desc: 'metadata id=fake' })])] }) }).status, 1)
 })
 test('signed centers and exact multiline queries survive JSON', () => {
   const result = ok(run(['tap', 'first\nsecond'], { DUMP: JSON.stringify({ version: 1, windows: [window([node({ text: 'first\nsecond', x: -10 })])] }) }))
-  assert.deepEqual(result.calls.at(-1), shellCommand('input', 'tap', -10, 200))
+  assert.deepEqual(result.calls.filter(isInput).at(-1), shellCommand('input', 'tap', -10, 200))
 })
 test('JSON output preserves windows and values; --windows reaches helper', () => {
   const data = { version: 1, windows: [window([node({ text: 'a\nb' })], 2), window([node()], 1)] }
@@ -123,12 +129,12 @@ test('JSON output preserves windows and values; --windows reaches helper', () =>
   assert.deepEqual(JSON.parse(result.stdout), data)
   assert.match(result.calls.at(-1)[1], /Dump --all --windows$/)
   const tap = ok(run(['tap', 'Delete', '--windows', '--nth', '1'], { DUMP: JSON.stringify({ version: 1, windows: [window([node({ x: 10, clickable: false })], 2), window([node({ x: 20 })], 1)] }) }))
-  assert.deepEqual(tap.calls.at(-1), shellCommand('input', 'tap', 20, 200))
+  assert.deepEqual(tap.calls.filter(isInput).at(-1), shellCommand('input', 'tap', 20, 200))
 })
 test('literal --nth and %s are typed without option or Android substitution', () => {
-  assert.deepEqual(ok(run(['type', '--nth', '2'])).calls, [shellCommand('input', 'text', '--nth%s2')])
+  assert.deepEqual(ok(run(['type', '--nth', '2'])).calls.filter(isInput), [shellCommand('input', 'text', '--nth%s2')])
   const result = ok(run(['type', 'a %s %%s']))
-  assert.deepEqual(result.calls, ['a%s', '%', 's%s', '%', '%', 's'].map(v => shellCommand('input', 'text', v)))
+  assert.deepEqual(result.calls.filter(isInput), ['a%s', '%', 's%s', '%', '%', 's'].map(v => shellCommand('input', 'text', v)))
   assert.equal(run(['type', '한글']).status, 1)
 })
 test('shell quoting round trips punctuation without interpretation', () => {
@@ -211,16 +217,16 @@ test('actions go through the daemon, and fall back to input when it cannot injec
   const data = { version: 1, windows: [window([node({ text: 'From daemon', x: 7 })])], seq: 3 }
   const daemon = await fakeDaemon(data, { ok: true }, data, { error: 'java.lang.IllegalStateException: x', restart: true })
   try {
-    const tap = await runWithDaemon(['tap', 'From daemon'], daemon.port)
+    const tap = await runWithDaemon(['tap', '--quiet', 'From daemon'], daemon.port)
     assert.equal(tap.status, 0, tap.stderr)
     assert.deepEqual(daemon.requests[1], { hash: fixtureHash, cmd: 'tap', x: 7, y: 200 })
     assert.ok(!tap.calls.some((c) => c[1]?.startsWith("'input'")))
-    const fallback = await runWithDaemon(['tap', 'From daemon'], daemon.port)
-    assert.deepEqual(fallback.calls.at(-1), shellCommand('input', 'tap', 7, 200))
+    const fallback = await runWithDaemon(['tap', '--quiet', 'From daemon'], daemon.port)
+    assert.deepEqual(fallback.calls.filter(isInput).at(-1), shellCommand('input', 'tap', 7, 200))
   } finally { await daemon.close() }
   const bad = await fakeDaemon({ error: 'unknown key KEYCODE_NOPE' })
   try {
-    const key = await runWithDaemon(['key', 'KEYCODE_NOPE'], bad.port)
+    const key = await runWithDaemon(['key', '--quiet', 'KEYCODE_NOPE'], bad.port)
     assert.equal(key.status, 1)
     assert.match(key.stderr, /unknown key KEYCODE_NOPE/)
   } finally { await bad.close() }
@@ -433,9 +439,9 @@ test('mcp run returns per-step JSON, and the measured steps on failure', () => {
 })
 test('scroll uses the rotated screen size, then wm size, and fails clearly without either', () => {
   const landscape = ok(run(['scroll', 'down'], { DISPLAYS: '  init=1080x2340 420dpi cur=2340x1080 app=2340x1017', WM_SIZE: 'Physical size: 1080x2340' }))
-  assert.deepEqual(landscape.calls.at(-1), shellCommand('input', 'swipe', 1170, 864, 1170, 216, 300))
+  assert.deepEqual(landscape.calls.filter(isInput).at(-1), shellCommand('input', 'swipe', 1170, 864, 1170, 216, 300))
   const fallback = ok(run(['scroll', 'down'], { WM_SIZE: 'Physical size: 1080x2340\n' }))
-  assert.deepEqual(fallback.calls.at(-1), shellCommand('input', 'swipe', 540, 1872, 540, 468, 300))
+  assert.deepEqual(fallback.calls.filter(isInput).at(-1), shellCommand('input', 'swipe', 540, 1872, 540, 468, 300))
   assert.match(run(['scroll', 'down']).stderr, /could not read the screen size/)
 })
 test('wait keeps waiting through a screen with no windows', () => {
@@ -446,14 +452,14 @@ test('wait keeps waiting through a screen with no windows', () => {
 })
 test('a gesture the helper cancelled is not replayed through input', async () => {
   const daemon = await fakeDaemon({ error: 'Android refused the gesture after it started; it was cancelled' })
-  const result = await runWithDaemon(['tap', '10,20'], daemon.port)
+  const result = await runWithDaemon(['tap', '--quiet', '10,20'], daemon.port)
   await daemon.close()
   assert.equal(result.status, 1)
   assert.ok(!result.calls.some((c) => c[1]?.includes("'input'")))
 })
 test('ADRIVE_NO_DAEMON only disables the daemon when set to 1', async () => {
   const daemon = await fakeDaemon({ ok: true })
-  const result = await runWithDaemon(['key', 'back'], daemon.port, { ADRIVE_NO_DAEMON: '0' })
+  const result = await runWithDaemon(['key', '--quiet', 'back'], daemon.port, { ADRIVE_NO_DAEMON: '0' })
   await daemon.close()
   assert.equal(result.status, 0, result.stderr)
   assert.equal(daemon.requests.length, 1)
@@ -480,12 +486,12 @@ test('look numbers actionable elements, and a ref acts only while the element is
   const seek = node({ class: 'android.widget.SeekBar', text: '', clickable: false, left: 0, right: 1000, y: 500 })
   const taps = (result) => result.calls.filter((c) => c[0] === 'shell' && c[1].startsWith("'input'"))
   // Before any look, @text is still matched as text.
-  assert.deepEqual(ok(run(['tap', '@2024'], screen([node({ text: '@2024', x: 7 })]))).calls.at(-1), shellCommand('input', 'tap', 7, 200))
+  assert.deepEqual(ok(run(['tap', '@2024'], screen([node({ text: '@2024', x: 7 })]))).calls.filter(isInput).at(-1), shellCommand('input', 'tap', 7, 200))
   assert.match(run(['tap', '@1'], screen([play])).stderr, /no refs yet and no element matches "@1"/)
   const look = ok(run(['look'], screen([label, play, node(), field, seek])))
   assert.equal(look.stdout, '[1] Button "Play"\n[2] Button "Delete"\n[3] EditText "name" editable\n[4] SeekBar\n')
-  assert.deepEqual(ok(run(['tap', '@2'], screen([play, node()]))).calls.at(-1), shellCommand('input', 'tap', 100, 200))
-  assert.deepEqual(ok(run(['slide', '@4', '1'], screen([seek]))).calls.at(-1), shellCommand('input', 'swipe', 24, 500, 976, 500, 700))
+  assert.deepEqual(ok(run(['tap', '@2'], screen([play, node()]))).calls.filter(isInput).at(-1), shellCommand('input', 'tap', 100, 200))
+  assert.deepEqual(ok(run(['slide', '@4', '1'], screen([seek]))).calls.filter(isInput).at(-1), shellCommand('input', 'swipe', 24, 500, 976, 500, 700))
   // A unique ID keeps the ref through a changed label.
   ok(run(['tap', '@3'], screen([{ ...field, text: 'Ada' }])))
   for (const [args, now, error] of [
@@ -499,4 +505,41 @@ test('look numbers actionable elements, and a ref acts only while the element is
     assert.match(result.stderr, error)
     assert.deepEqual(taps(result), [])
   }
+})
+
+test('actions print what changed once the screen settles, ignoring animating labels', () => {
+  const label = (text, top) => node({ class: 'android.widget.TextView', text, clickable: false, top, bottom: top + 50 })
+  const screen = (i, nodes) => JSON.stringify({ version: 1, windows: [window([label(`0:0${i}`, 0), ...nodes])] })
+  const env = { DUMP0: screen(0, [node(), label('taps 1', 300), label('Loading', 400)]) }
+  for (let i = 1; i < 40; i++) env[`DUMP${i}`] = screen(i, [node(), label('taps 2', 300), node({ text: 'Ready', top: 500 })])
+  const result = ok(run(['tap', 'Delete'], env))
+  assert.equal(result.stdout, 'tapped Button text="Delete" clickable @100,200 [50,150,150,250]\n'
+    + 'appeared: Button "Ready"\ngone: TextView "Loading"\nchanged: TextView "taps 1" -> "taps 2"\n')
+  // The target lookup doubles as the screen before.
+  assert.equal(result.calls.slice(0, result.calls.findIndex(isInput)).filter((c) => c[1]?.includes('app_process')).length, 1)
+  const json = JSON.parse(ok(run(['tap', '--json', 'Delete'], env)).stdout)
+  assert.match(json.done, /^tapped/)
+  assert.deepEqual([json.settled, json.appeared.map((n) => n.text), json.gone.map((n) => n.text), json.changed.map((c) => c.to.text)],
+    [true, ['Ready'], ['Loading'], ['taps 2']])
+  assert.equal(ok(run(['key', 'back'])).stdout, 'no change\n')
+  const many = { DUMP0: JSON.stringify({ version: 1, windows: [window(Array.from({ length: 12 }, (_, i) => node({ text: `Stem ${i}` })))] }),
+    DUMP: JSON.stringify({ version: 1, windows: [{ ...window([]), package: 'com.launcher' }] }) }
+  const back = ok(run(['key', 'back'], many)).stdout.split('\n')
+  assert.deepEqual([back[0], back[1], back.at(-2), back.length], ['screen: com.launcher', 'gone: Button "Stem 0"', 'gone: 2 more', 13])
+  assert.equal(ok(run(['key', '--quiet', 'back'])).stdout, '')
+  assert.match(run(['key', '--quiet', '--json', 'back']).stderr, /cannot be combined/)
+})
+
+test('a layout that keeps moving is reported after 2 s, not waited on forever', () => {
+  const env = {}
+  for (let i = 0; i < 80; i++) env[`DUMP${i}`] = JSON.stringify({ version: 1, windows: [window([node({ top: i })])] })
+  const result = ok(run(['key', 'back'], env))
+  assert.match(result.stdout, /still changing after 2 s\n$/)
+})
+
+test('type takes options only before an explicit --', () => {
+  const quiet = ok(run(['type', '--quiet', '--', 'hi']))
+  assert.equal(quiet.stdout, '')
+  assert.deepEqual(quiet.calls.filter(isInput), [shellCommand('input', 'text', 'hi')])
+  assert.deepEqual(ok(run(['type', '--quiet', 'hi'])).calls.filter(isInput), [shellCommand('input', 'text', '--quiet%shi')])
 })

@@ -43,7 +43,7 @@ const TOOLS = {
     readOnly: true,
   },
   tap: {
-    description: 'Tap an element or coordinates. Fails without touching the device if nothing matches.',
+    description: 'Tap an element or coordinates. Fails without touching the device if nothing matches. Like every action, waits up to 2 s for the screen to settle and returns what appeared, disappeared or changed.',
     props: { target, nth, windows }, required: ['target'],
     argv: (a) => ['tap', ...element(a), '--', a.target],
   },
