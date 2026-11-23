@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, realpathSync, statSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, realpathSync, statSync } from 'node:fs'
 import { connect } from 'node:net'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -16,9 +16,10 @@ const helperSocket = 'localabstract:adrive'
 const USAGE = `adrive: drive any Android app (release builds too) over adb. Device: ANDROID_SERIAL.
 
   ui [--all] [--windows] [--json]                 visible elements: class text= desc= id= flags @centerX,centerY [bounds]
-  tap <query|x,y> [--nth N]  tap the element matching text/desc/id (exact first, then substring)
-  longpress <query|x,y>
-  slide <query> <0..1>       drag a slider to a fraction of its width
+  look [--windows]           actionable elements with refs: [3] Button "Play"; act on them as @3
+  tap <query|x,y|@ref> [--nth N]  tap the element matching text/desc/id (exact first, then substring)
+  longpress <query|x,y|@ref>
+  slide <query|@ref> <0..1>      drag a slider to a fraction of its width
   type <text>                type into the focused field
   swipe <x1> <y1> <x2> <y2> [ms]
   scroll up|down|left|right
@@ -166,13 +167,16 @@ async function dump(all = false, windows = false) {
   return result
 }
 
+function nodeFlags(n, keys) {
+  const out = keys.filter((key) => n[key])
+  if (n.checkable) out.push(n.checked ? 'checked' : 'unchecked')
+  if (!n.enabled) out.push('disabled')
+  return out
+}
 function formatNode(n) {
   const fields = [n.class.split('.').at(-1)]
   for (const key of ['text', 'desc', 'id']) if (n[key]) fields.push(`${key}=${JSON.stringify(n[key])}`)
-  for (const key of ['clickable', 'scrollable', 'editable', 'selected']) if (n[key]) fields.push(key)
-  if (n.checkable) fields.push(n.checked ? 'checked' : 'unchecked')
-  if (!n.enabled) fields.push('disabled')
-  fields.push(`@${n.x},${n.y}`, `[${n.left},${n.top},${n.right},${n.bottom}]`)
+  fields.push(...nodeFlags(n, ['clickable', 'scrollable', 'editable', 'selected']), `@${n.x},${n.y}`, `[${n.left},${n.top},${n.right},${n.bottom}]`)
   return fields.join(' ')
 }
 
@@ -190,12 +194,56 @@ async function find(query, nth = 0, windows = false) {
 function dumpWindowOrder(nodes) {
   return [...new Set(nodes.map((n) => n.windowId))].map((id, i) => [id, i])
 }
+const ACTIONABLE = (n) => n.clickable || n.longClickable || n.editable || n.scrollable || n.checkable || /SeekBar|Slider/.test(n.class)
+const same = (keys) => (a, b) => keys.every((k) => a[k] === b[k])
+const sameBox = same(['class', 'id', 'left', 'top', 'right', 'bottom'])
+const sameNode = same(['class', 'text', 'desc', 'id', 'left', 'top', 'right', 'bottom'])
+// Not in /tmp: it is shared between users on Linux.
+function refsFile() {
+  const serial = process.env.ANDROID_SERIAL || adb(['get-serialno']).trim()
+  const dir = join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'adrive')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  return join(dir, `refs-${createHash('md5').update(serial).digest('hex').slice(0, 12)}.json`)
+}
+function savedRefs() {
+  try {
+    const saved = JSON.parse(readFileSync(refsFile(), 'utf8'))
+    return Array.isArray(saved?.refs) ? saved : null
+  } catch { return null }
+}
+async function look(windows) {
+  const data = await dump(false, windows)
+  const refs = data.windows.flatMap((w) => w.nodes.filter(ACTIONABLE).map((n) => ({ ...n, windowId: w.id })))
+  writeFileSync(refsFile(), JSON.stringify({ windows, refs }))
+  return refs
+}
+function formatRef(n, i) {
+  const label = n.text || n.desc || n.id.split('/').at(-1)
+  return [`[${i + 1}]`, n.class.split('.').at(-1), ...(label ? [JSON.stringify(label)] : []),
+    ...nodeFlags(n, ['editable', 'scrollable', 'selected'])].join(' ')
+}
+async function resolveRef(ref, saved, nth, windows) {
+  if (nth !== undefined) throw new Error('--nth does not apply to refs')
+  if (windows !== saved.windows) throw new Error(`@${ref} is from \`adrive look${saved.windows ? ' --windows' : ''}\`; pass the same --windows, or look again`)
+  const node = saved.refs[+ref - 1]
+  if (!node) throw new Error(`@${ref} is not in the last look (${saved.refs.length} refs); run \`adrive look\``)
+  const now = (await dump(false, windows)).windows.flatMap((w) => w.nodes)
+  // An ID unique in both dumps survives a live label like "Downloading 42%".
+  const byId = node.id && saved.refs.filter((n) => n.id === node.id).length === 1 ? now.filter((n) => n.id === node.id) : []
+  const found = byId.length === 1 ? (sameBox(byId[0], node) ? byId[0] : null) : now.find((n) => sameNode(n, node))
+  if (!found) throw new Error(`@${ref} ${formatRef(node, +ref - 1)} is gone or moved; run \`adrive look\``)
+  return { ...found, line: formatNode(found) }
+}
 async function point(target, nth, windows) {
   required(target, 'target')
+  const ref = target.match(/^@(\d+)$/)
+  // Text like "@2024" is still matched as text until the first look.
+  const saved = ref && savedRefs()
+  if (saved) return resolveRef(ref[1], saved, nth, windows)
   const m = target.match(/^(-?\d+),(-?\d+)$/)
   if (m) return { x: number(m[1], 'x', -2147483648), y: number(m[2], 'y', -2147483648) }
   const node = await find(target, nth, windows)
-  if (!node) throw new Error(`no element matches "${target}" — run \`adrive ui\``)
+  if (!node) throw new Error(ref ? `no refs yet and no element matches "${target}"; run \`adrive look\`` : `no element matches "${target}" — run \`adrive ui\``)
   return { ...node, line: formatNode(node) }
 }
 
@@ -268,7 +316,7 @@ function perf(pkg) {
   return `CPU by thread (pid ${p}):\n${threads}\n\nMemory:\n${mem}\n\nFrames:\n${frames || 'no frames rendered'}`
 }
 
-const STEP_COMMANDS = new Set(['tap', 'longpress', 'slide', 'type', 'swipe', 'scroll', 'key', 'wait', 'gone', 'shot', 'launch', 'stop', 'open'])
+const STEP_COMMANDS = new Set(['look', 'tap', 'longpress', 'slide', 'type', 'swipe', 'scroll', 'key', 'wait', 'gone', 'shot', 'launch', 'stop', 'open'])
 function parseSteps(text) {
   let list
   try { list = JSON.parse(text) } catch { throw new Error('steps must be a JSON array') }
@@ -457,6 +505,7 @@ async function main([cmd, ...raw]) {
   const element = ['tap', 'longpress', 'slide', 'wait', 'gone'].includes(cmd)
   const allowed = element ? { '--windows': false } : {}
   if (['tap', 'longpress', 'slide'].includes(cmd)) allowed['--nth'] = true
+  if (cmd === 'look') allowed['--windows'] = false
   if (cmd === 'ui') Object.assign(allowed, { '--all': false, '--windows': false, '--json': false })
   if (['log', 'crash', 'perf', 'audio'].includes(cmd)) allowed['--package'] = true
   if (cmd === 'audio') allowed['--json'] = false
@@ -467,7 +516,7 @@ async function main([cmd, ...raw]) {
   const { args, flags } = cmd === 'type'
     ? { args: raw[0] === '--' ? raw.slice(1) : raw, flags: {} }
     : options(raw, allowed)
-  const nth = number(flags['--nth'] ?? 0, '--nth')
+  const nth = flags['--nth'] === undefined ? undefined : number(flags['--nth'], '--nth')
   const windows = !!flags['--windows']
   switch (cmd) {
     case 'ui': {
@@ -481,6 +530,12 @@ async function main([cmd, ...raw]) {
       }
       return
     }
+    case 'look': {
+      arity(args, 0, 0, 'look [--windows]')
+      const refs = await look(windows)
+      if (!refs.length) throw new Error('no actionable elements; is the screen on and unlocked? try `adrive ui`')
+      return console.log(refs.map(formatRef).join('\n'))
+    }
     case 'tap':
     case 'longpress': {
       const p = await point(args.join(' '), nth, windows)
@@ -489,7 +544,7 @@ async function main([cmd, ...raw]) {
       return console.log(`${cmd === 'tap' ? 'tapped' : 'long-pressed'} ${p.line ?? `${p.x},${p.y}`}`)
     }
     case 'slide': {
-      arity(args, 2, Infinity, 'slide <query> <0..1>')
+      arity(args, 2, Infinity, 'slide <query|@ref> <0..1>')
       const fraction = number(args.pop(), 'fraction', 0, false)
       if (fraction > 1) throw new Error('fraction must be <= 1')
       const node = await point(args.join(' '), nth, windows)

@@ -42,6 +42,9 @@ The build selects the highest numeric installed platform and build-tools version
 ```sh
 adrive ui
 adrive ui --all --windows --json
+adrive look                  # [1] Button "Play"  [2] SeekBar ...
+adrive tap @1
+adrive slide @2 0.5
 adrive tap 'Play' --nth 0
 adrive tap 300,600
 adrive longpress 'Track name'
@@ -76,6 +79,8 @@ Diagnostics default to the focused app. Packages are supplied only with `--packa
 
 Element matching is case-insensitive: exact text, description, or resource ID first, then substring. Full IDs and the short suffix after `/` both work. Clickable matches are preferred within each window. `--nth` is zero-based and supported by `tap`, `longpress`, and `slide`. Missing targets fail before any device action. Use `--` before a target that starts with `--`. `type` treats its arguments as literal text (an initial `--` is an optional delimiter).
 
+`look` numbers the elements you can act on, and `tap`, `longpress` and `slide` take `@N` from the last `look`. A ref fails without touching the device if its element moved or is gone, or if `--windows` differs from the `look`. An element with a unique resource ID keeps its ref when only its text changes, so a live label like `Downloading 42%` still works; in a pager that swaps content under the same ID, `look` again after swiping. Refs are kept per device in `~/.cache/adrive` (or `$XDG_CACHE_HOME/adrive`), so run one driver per device at a time. Until the first `look`, `@2024` is matched as text; after it, as a ref.
+
 `type` supports printable ASCII, including literal `%s`, quotes, and shell punctuation. Unicode and newlines are rejected before typing because Android's key-event based `input text` is not a general Unicode input method. Literal percent signs are sent separately to avoid Android's `%s` substitution.
 
 ## MCP server
@@ -105,13 +110,13 @@ For each step it reports frames (total, janky, p50/p90/p99 from gfxinfo), CPU ti
   pss 56.5 MB (-2.1)
 ```
 
-Steps can be `tap`, `longpress`, `slide`, `type`, `swipe`, `scroll`, `key`, `wait`, `gone`, `shot`, `launch`, `stop` and `open`. Only the step list and command names are checked before the run starts; a step with bad arguments fails when it is reached, after the steps before it have run. The run stops at the first failing step and still reports it and the steps before it. `--json` prints the same data with each step's command output. `--trace file` records a Perfetto trace of the whole run (scheduling, frequency, graphics, views, input, binder and the app's own trace sections) to open in [ui.perfetto.dev](https://ui.perfetto.dev).
+Steps can be `look`, `tap`, `longpress`, `slide`, `type`, `swipe`, `scroll`, `key`, `wait`, `gone`, `shot`, `launch`, `stop` and `open`. Only the step list and command names are checked before the run starts; a step with bad arguments fails when it is reached, after the steps before it have run. The run stops at the first failing step and still reports it and the steps before it. `--json` prints the same data with each step's command output. `--trace file` records a Perfetto trace of the whole run (scheduling, frequency, graphics, views, input, binder and the app's own trace sections) to open in [ui.perfetto.dev](https://ui.perfetto.dev).
 
 Each step's frame counts include the half second or so adrive spends reading memory between steps, while CPU covers only the step itself. CPU is only reported for the app's main process, and a thread that exits during a step loses its time. If the app restarts during a step, CPU is not reported for it.
 
 ## Windows and output
 
-By default, inspection and matching use the active root. Add `--windows` to `ui`, `tap`, `longpress`, `slide`, `wait`, or `gone` to include interactive windows such as the keyboard. Windows retain Android's descending Z-order; exact matches still take precedence over substring matches. `--all` includes visible unlabeled/non-actionable nodes. An app must expose accessibility nodes; custom canvas pixels are not automatically recognizable controls.
+By default, inspection and matching use the active root. Add `--windows` to `ui`, `look`, `tap`, `longpress`, `slide`, `wait`, or `gone` to include interactive windows such as the keyboard. Windows retain Android's descending Z-order; exact matches still take precedence over substring matches. `--all` includes visible unlabeled/non-actionable nodes. An app must expose accessibility nodes; custom canvas pixels are not automatically recognizable controls.
 
 `ui --json` emits the same structured data consumed internally by the CLI:
 
