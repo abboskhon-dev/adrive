@@ -26,7 +26,7 @@ The package is named `adb-drive`; the command is `adrive`. It ships a prebuilt h
 
 ### From source
 
-Building the helper also needs JDK 17+, an Android SDK platform and build-tools (with `d8`).
+Building the helper also needs JDK 17, an Android SDK platform and build-tools (with `d8`).
 
 ```sh
 export ANDROID_HOME="$HOME/Library/Android/sdk" # use your SDK location
@@ -35,7 +35,7 @@ export PATH="$ANDROID_HOME/platform-tools:$PATH"
 ./adrive.mjs help
 ```
 
-The build selects the highest numeric installed platform and build-tools versions. Override with `ANDROID_PLATFORM=android-36 ANDROID_BUILD_TOOLS=36.0.0 ./build.sh`. `ANDROID_SDK_ROOT` is accepted when `ANDROID_HOME` is unset. The dex is ignored by git and built by `npm pack` before publishing. Optionally run `npm link` to install the `adrive` command.
+The build uses JDK 17, `android-36` and build-tools `36.0.0`, so the dex rebuilds byte for byte; its SHA-256 is printed by `./build.sh` and `adrive --version`, and listed in each GitHub release. Override with `ANDROID_PLATFORM` and `ANDROID_BUILD_TOOLS`. `ANDROID_SDK_ROOT` is accepted when `ANDROID_HOME` is unset. The dex is ignored by git; releases are built and published by CI with npm provenance and a build attestation (`gh attestation verify classes.dex --repo abboskhon-dev/adrive`). Optionally run `npm link` to install the `adrive` command.
 
 ## Examples
 

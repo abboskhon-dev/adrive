@@ -4,7 +4,7 @@ Issues and pull requests are welcome.
 
 ## Setup
 
-Requires Node.js 18+, JDK 17+ and an Android SDK with platform-tools, a platform and build-tools
+Requires Node.js 18+, JDK 17 and an Android SDK with platform-tools, a platform and build-tools
 (see the [README](./README.md#setup)).
 
 ```sh
@@ -60,5 +60,6 @@ To release:
 1. Open a PR that sets `version` in `package.json` and renames `Unreleased` in `CHANGELOG.md` to
    `x.y.z — YYYY-MM-DD`, with a fresh empty `Unreleased` above it.
 2. After it merges, tag that commit `vx.y.z` and push the tag.
-3. From a clean checkout of the tag, run `npm test` and `npm publish`. `prepack` rebuilds the
-   helper dex, so the published dex matches `helper/Dump.java` at the tag.
+3. The `Release` workflow tests, builds the dex, attests it, publishes to npm with provenance and
+   creates the GitHub release with the changelog section and the dex SHA-256. It needs the
+   `NPM_KEY` secret.
