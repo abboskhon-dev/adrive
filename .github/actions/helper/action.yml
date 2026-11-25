@@ -1,0 +1,14 @@
+name: Build helper
+description: Build helper/build/classes.dex with the pinned JDK, platform and build-tools
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 17.0.16
+    - uses: android-actions/setup-android@v3
+      with:
+        packages: platforms;android-36 build-tools;36.0.0
+    - run: ./build.sh
+      shell: sh

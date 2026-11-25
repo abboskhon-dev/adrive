@@ -465,8 +465,9 @@ test('ADRIVE_NO_DAEMON only disables the daemon when set to 1', async () => {
   assert.equal(daemon.requests.length, 1)
 })
 test('version prints the package version', () => {
-  assert.equal(ok(run(['--version'])).stdout, '0.0.0\n')
-  assert.equal(ok(run(['version'])).stdout, '0.0.0\n')
+  const sha = createHash('sha256').update('fixture').digest('hex')
+  assert.equal(ok(run(['--version'])).stdout, `0.0.0\nhelper sha256 ${sha}\n`)
+  assert.equal(ok(run(['version'])).stdout, `0.0.0\nhelper sha256 ${sha}\n`)
 })
 test('mcp answers non-object messages and keeps serving', () => {
   const input = ['null', '[]', JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })].join('\n')

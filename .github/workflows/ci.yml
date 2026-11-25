@@ -32,18 +32,27 @@ jobs:
 
   helper:
     if: github.event_name == 'push' || !github.event.pull_request.draft
-    runs-on: ubuntu-latest
+    name: helper (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-      - run: ./build.sh
+      - uses: ./.github/actions/helper
       - uses: actions/upload-artifact@v4
         with:
-          name: helper-dex
+          name: helper-dex-${{ matrix.os }}
           path: helper/build/classes.dex
+
+  reproducible:
+    needs: helper
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: helper-dex-*
+      - run: sha256sum helper-dex-*/classes.dex && cmp helper-dex-ubuntu-latest/classes.dex helper-dex-macos-latest/classes.dex
 
   emulator:
     if: github.event_name == 'push' || !github.event.pull_request.draft
@@ -61,7 +70,7 @@ jobs:
           node-version: 22
       - uses: actions/download-artifact@v4
         with:
-          name: helper-dex
+          name: helper-dex-ubuntu-latest
           path: helper/build
       - name: Enable KVM
         run: |

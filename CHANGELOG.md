@@ -5,6 +5,12 @@ release retitles it `## <version> — <date>`.
 
 ## Unreleased
 
+### Added
+
+- **Verifiable releases** (#32)
+  - Releases are published from CI with npm provenance and a build attestation for the helper dex.
+  - The helper dex rebuilds byte for byte; `adrive --version` prints its SHA-256.
+
 ## 0.1.0 — 2026-11-22
 
 First release.

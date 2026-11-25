@@ -766,7 +766,8 @@ async function main([cmd, ...raw]) {
     case 'version':
     case '--version':
       arity(args, 0, 0, 'version')
-      return console.log(JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version)
+      console.log(JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version)
+      try { return console.log(`helper sha256 ${createHash('sha256').update(readFileSync(localDex)).digest('hex')}`) } catch { return console.log('helper not built') }
     case undefined:
     case 'help':
     case '--help':
