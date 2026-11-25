@@ -3,19 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
   test:
-    if: github.event_name == 'push' || !github.event.pull_request.draft
     name: test (node ${{ matrix.node }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -31,7 +28,6 @@ jobs:
       - run: npm test
 
   helper:
-    if: github.event_name == 'push' || !github.event.pull_request.draft
     name: helper (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -55,7 +51,6 @@ jobs:
       - run: sha256sum helper-dex-*/classes.dex && cmp helper-dex-ubuntu-latest/classes.dex helper-dex-macos-latest/classes.dex
 
   emulator:
-    if: github.event_name == 'push' || !github.event.pull_request.draft
     name: emulator (API ${{ matrix.api }})
     needs: helper
     runs-on: ubuntu-latest
