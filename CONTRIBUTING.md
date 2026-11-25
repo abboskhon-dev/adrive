@@ -37,8 +37,9 @@ the issue first saves a rewrite in review.
   CI, docs and housekeeping. If it does both, use `feat/`.
 - Open an issue first, or find one, and start the PR body with `Closes #N`.
 - Fill in the PR template: summary, evidence, merge danger.
-- Open the PR as a draft. CI runs on `main` and on PRs marked ready for review, not on drafts.
-- Run `npm test` before every push; for device changes, also run `test/smoke.sh` on a device.
+- Open the PR as a draft.
+- CI runs only on `main`, so run the checks locally before every push: `npm test`, `./build.sh`
+  if `helper/` or `build.sh` changed, and `test/smoke.sh` on a device or emulator for device changes.
 - Squash-merge with the PR title as the commit subject, so it ends in `(#N)`.
 - Add an entry to `CHANGELOG.md` under `Unreleased`: a bold headline with the PR number, details
   as sub-bullets; build and test changes go under `Internal`.
