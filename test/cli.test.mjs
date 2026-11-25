@@ -469,6 +469,14 @@ test('version prints the package version', () => {
   assert.equal(ok(run(['--version'])).stdout, `0.0.0\nhelper sha256 ${sha}\n`)
   assert.equal(ok(run(['version'])).stdout, `0.0.0\nhelper sha256 ${sha}\n`)
 })
+test('skill install copies SKILL.md into the Claude config dir', () => {
+  mkdirSync(join(dir, 'skill'), { recursive: true })
+  copyFileSync(new URL('../skill/SKILL.md', import.meta.url), join(dir, 'skill/SKILL.md'))
+  const config = join(dir, 'claude')
+  assert.equal(ok(run(['skill', 'install'], { CLAUDE_CONFIG_DIR: config })).stdout, `installed ${join(config, 'skills/adrive/SKILL.md')}\n`)
+  assert.equal(readFileSync(join(config, 'skills/adrive/SKILL.md'), 'utf8'), readFileSync(new URL('../skill/SKILL.md', import.meta.url), 'utf8'))
+  assert.notEqual(run(['skill', 'remove'], { CLAUDE_CONFIG_DIR: config }).status, 0)
+})
 test('mcp answers non-object messages and keeps serving', () => {
   const input = ['null', '[]', JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })].join('\n')
   const result = ok(spawnSync(process.execPath, [join(dir, 'adrive.mjs'), 'mcp'], { input, encoding: 'utf8', timeout: 5000, env: environment() }))

@@ -47,6 +47,7 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   clear <pkg>                    wipe app data (signs out)
   daemon status|stop             the helper stays up 30 s after a command; stop frees the device for other tools
   mcp                            run as an MCP server over stdio
+  skill install                  install the Claude Code skill to ~/.claude/skills/adrive
   version                        print the adrive version
 
   ADRIVE_NO_DAEMON=1 runs the helper once per command. ADRIVE_DAEMON_IDLE=<seconds> changes the 30 s.`
@@ -763,6 +764,14 @@ async function main([cmd, ...raw]) {
     case 'mcp':
       arity(args, 0, 0, 'mcp')
       return (await import('./mcp.mjs')).serve()
+    case 'skill': {
+      arity(args, 1, 1, 'skill install')
+      if (args[0] !== 'install') throw new Error('usage: adrive skill install')
+      const dest = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'skills/adrive')
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, 'SKILL.md'), readFileSync(join(here, 'skill/SKILL.md')))
+      return console.log(`installed ${join(dest, 'SKILL.md')}`)
+    }
     case 'version':
     case '--version':
       arity(args, 0, 0, 'version')

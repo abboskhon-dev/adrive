@@ -16,6 +16,7 @@
     "adrive.mjs",
     "mcp.mjs",
     "build.sh",
+    "skill/SKILL.md",
     "helper/Dump.java",
     "helper/build/classes.dex"
   ],
