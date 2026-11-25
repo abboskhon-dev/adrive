@@ -85,6 +85,10 @@ Element matching is case-insensitive: exact text, description, or resource ID fi
 
 `type` supports printable ASCII, including literal `%s`, quotes, and shell punctuation. Unicode and newlines are rejected before typing because Android's key-event based `input text` is not a general Unicode input method. Literal percent signs are sent separately to avoid Android's `%s` substitution.
 
+## Claude Code skill
+
+`adrive skill install` copies [`skill/SKILL.md`](skill/SKILL.md) to `~/.claude/skills/adrive` (or `$CLAUDE_CONFIG_DIR/skills/adrive`), so Claude Code can drive apps from the shell without the MCP server: `look`, act on a ref, read what changed, and take a screenshot only when the tree has nothing. Run it again after upgrading adrive; it overwrites the installed copy.
+
 ## MCP server
 
 `adrive mcp` serves every command as a tool over stdio, for Claude Code, Cursor, and other MCP clients. `screenshot` returns the image instead of a file path, `run` takes its steps as a JSON array and returns the JSON report (with the steps measured so far when one fails); over MCP it caps waits and settle at 60 s, has no `shot` step, and saves a trace to a temporary folder whose path the report gives, and `daemon` is CLI-only. Calls run one at a time, since they share one device.

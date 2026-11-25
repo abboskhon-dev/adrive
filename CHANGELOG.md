@@ -10,6 +10,8 @@ release retitles it `## <version> — <date>`.
 - **Verifiable releases** (#32)
   - Releases are published from CI with npm provenance and a build attestation for the helper dex.
   - The helper dex rebuilds byte for byte; `adrive --version` prints its SHA-256.
+- **Claude Code skill** (#23)
+  - `adrive skill install` adds a skill that teaches Claude Code the `look`, act, read-the-change loop from the shell.
 
 ## 0.1.0 — 2026-11-22
 
