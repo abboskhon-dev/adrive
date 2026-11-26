@@ -42,6 +42,7 @@ The build uses JDK 17, `android-36` and build-tools `36.0.0`, so the dex rebuild
 ```sh
 adrive ui
 adrive ui --all --windows --json
+adrive look --wait 'Ready'   # wait up to 10 s for it, then list
 adrive look                  # [1] Button "Play"  [2] SeekBar ...
 adrive tap @1
 adrive slide @2 0.5
@@ -76,6 +77,8 @@ adrive daemon stop
 ```
 
 Diagnostics default to the focused app. Packages are supplied only with `--package`; a dotted regex is always a regex. `crash` reports the last Java crash matching the exact package or a `package:subprocess`, plus current ANR/crashing state, not historical ANR traces or native tombstones. `log` filters the current main process PID; it does not aggregate subprocesses or logs from previous process instances. `perf` reports Android's available CPU, memory, and gfxinfo counters; gfxinfo does not measure every custom rendering pipeline. `audio` reads `dumpsys media.audio_flinger` for the app's current PIDs: live tracks, their output thread, and recently closed tracks that had underrun frames (from AudioFlinger's per-thread local log). Tracks from earlier process instances are not attributed.
+
+`ui --wait <query>` and `look --wait <query>` wait up to 10 s for the element, then list the screen the wait saw; on a timeout they list the last screen and fail. Matching falls back to substring, so wait for text only the new screen has: `--wait Ready` also matches `Not ready`.
 
 Element matching is case-insensitive: exact text, description, or resource ID first, then substring. Full IDs and the short suffix after `/` both work. Clickable matches are preferred within each window. `--nth` is zero-based and supported by `tap`, `longpress`, and `slide`. Missing targets fail before any device action. Use `--` before a target that starts with `--`. `type` treats its arguments as literal text (an initial `--` is an optional delimiter).
 
