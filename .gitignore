@@ -5,4 +5,7 @@ demo/
 demo.log
 overlay/
 REVIEW_BRIEF.md
-bench/fixture/build/
+bench/*/build/
+bench/compose/.gradle/
+bench/compose/.kotlin/
+bench/compose/app/build/

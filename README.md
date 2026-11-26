@@ -143,7 +143,7 @@ After the first command that reads the screen, the helper keeps running and answ
 
 While the helper is running, it also performs taps, long presses, swipes, scrolls and keys itself through `UiAutomation.injectInputEvent`, instead of starting `adb shell input` for each one; on the same phone a tap went from about 0.27 s to 0.2 s. `wait` and `gone` sleep until the helper sees the screen change, instead of re-reading every 0.3 s; they returned a median 75 ms after the label appeared instead of 350 ms. On a screen that animates they re-read at most 10 times a second. `type` and runs with `ADRIVE_NO_DAEMON=1` still use `adb shell input` and polling.
 
-CI runs it on emulators for API 26, 29, 33, 35 and 36; it has also been run on an Android 15 phone and an Android 17 emulator. OEM builds other than Samsung's have not been verified. Test `ui`, `ui --windows --json`, and a harmless action on each target OS/OEM before relying on it. The supported public alternative is an installed instrumentation runner using `Instrumentation.getUiAutomation(flags)`, at the cost of additional setup.
+CI runs it on emulators for API 26, 29, 33, 35 and 36, against release-build fixtures made with Views, Jetpack Compose, Flutter and React Native (`bench/`, checked by `test/fixtures.sh`); it has also been run on an Android 15 phone and an Android 17 emulator. OEM builds other than Samsung's have not been verified. Test `ui`, `ui --windows --json`, and a harmless action on each target OS/OEM before relying on it. The supported public alternative is an installed instrumentation runner using `Instrumentation.getUiAutomation(flags)`, at the cost of additional setup.
 
 The dex runs with adb shell privileges on the selected device. Use a trusted adb host; the MD5 comparison is only a cache check, not authentication. Dumps, screenshots, and logs can contain personal data. Individual adb calls have a 15-second timeout; `wait`/`gone` may overrun their requested duration by one in-flight read.
 
@@ -167,7 +167,7 @@ Reading the tree of an app whose label and progress bar change on every frame, o
 
 Only `uiautomator dump` fails on an animating screen; Maestro and Appium read it after installing their driver apps. adrive answers first, with nothing installed, while Appium with idle waits off is faster once its session is warm. First-call times for Maestro and Appium include installing their drivers when missing.
 
-Run it yourself with `bench/fixture/build.sh`, then `ANDROID_SERIAL=<serial> node bench/bench.mjs`; set `APPIUM_URL` to include Appium. Full tables are in [`bench/RESULTS.md`](bench/RESULTS.md).
+Run it yourself with `bench/fixture/build.sh`, then `ANDROID_SERIAL=<serial> node bench/bench.mjs`; set `BENCH_FIXTURE` to `compose`, `flutter` or `react-native` to use that fixture (built by its `build.sh`, or downloaded from a CI run's artifacts); set `APPIUM_URL` to include Appium. Full tables are in [`bench/RESULTS.md`](bench/RESULTS.md).
 
 ## Development
 

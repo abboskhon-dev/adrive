@@ -7,12 +7,15 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const adrive = join(here, '../adrive.mjs')
-const apk = join(here, 'fixture/build/fixture.apk')
+const FIXTURE = process.env.BENCH_FIXTURE ?? 'fixture'
+const apk = join(here, FIXTURE, 'build/fixture.apk')
 const serial = process.env.ANDROID_SERIAL
 const appiumUrl = process.env.APPIUM_URL?.replace(/\/$/, '')
 const RUNS = Number(process.env.BENCH_RUNS ?? 20)
 const TIMEOUT = 60000
-const PKG = 'dev.adrive.fixture'
+const PKG = { fixture: 'dev.adrive.fixture', compose: 'dev.adrive.fixture.compose', flutter: 'dev.adrive.fixture.flutter',
+  'react-native': 'dev.adrive.fixture.rn' }[FIXTURE]
+if (!PKG) { console.error('BENCH_FIXTURE is one of fixture, compose, flutter, react-native'); process.exit(1) }
 const NEEDLE = 'Mute Bass'
 const TIMER = /\d+:\d\d\.\d{3}/
 const DRIVERS = ['dev.mobile.maestro', 'dev.mobile.maestro.test', 'io.appium.uiautomator2.server', 'io.appium.uiautomator2.server.test']
@@ -30,7 +33,7 @@ const has = (cmd) => spawnSync('which', [cmd]).status === 0
 function reset() {
   run(adrive, ['daemon', 'stop'])
   for (const pkg of DRIVERS) adb('shell', 'am', 'force-stop', pkg)
-  adb('shell', 'am', 'start', '-n', `${PKG}/.MainActivity`)
+  adb('shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1')
   for (let i = 0; i < 20; i++) {
     if (new RegExp(`mCurrentFocus=.* ${PKG}/`).test(adb('shell', 'dumpsys', 'window'))) return
     spawnSync('sleep', ['0.5'])
@@ -114,7 +117,7 @@ const percentile = (sorted, p) => sorted[Math.min(sorted.length - 1, Math.ceil(p
 const seconds = (ms) => `${(ms / 1000).toFixed(2)} s`
 
 if (!adb('shell', 'pm', 'path', PKG).includes('package:')) {
-  if (!existsSync(apk)) { console.error('run bench/fixture/build.sh first'); process.exit(1) }
+  if (!existsSync(apk)) { console.error(`run bench/${FIXTURE}/build.sh first`); process.exit(1) }
   adb('install', '-r', apk)
 }
 
