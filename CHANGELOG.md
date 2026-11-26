@@ -12,6 +12,8 @@ release retitles it `## <version> — <date>`.
   - The helper dex rebuilds byte for byte; `adrive --version` prints its SHA-256.
 - **Claude Code skill** (#23)
   - `adrive skill install` adds a skill that teaches Claude Code the `look`, act, read-the-change loop from the shell.
+- **`ui --wait` and `look --wait`**
+  - `--wait <query>` waits up to 10 s for an element to appear before reading the screen, so a read right after an action doesn't return the old screen.
 
 ## 0.1.0 — 2026-11-22
 

@@ -15,8 +15,8 @@ const helperSocket = 'localabstract:adrive'
 
 const USAGE = `adrive: drive any Android app (release builds too) over adb. Device: ANDROID_SERIAL.
 
-  ui [--all] [--windows] [--json]                 visible elements: class text= desc= id= flags @centerX,centerY [bounds]
-  look [--windows]           actionable elements with refs: [3] Button "Play"; act on them as @3
+  ui [--all] [--windows] [--json] [--wait <query>]  visible elements: class text= desc= id= flags @centerX,centerY [bounds]
+  look [--windows] [--wait <query>]  actionable elements with refs: [3] Button "Play"; act on them as @3
   tap <query|x,y|@ref> [--nth N]  tap the element matching text/desc/id (exact first, then substring)
   longpress <query|x,y|@ref>
   slide <query|@ref> <0..1>      drag a slider to a fraction of its width
@@ -33,6 +33,7 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
 
   --package defaults to the foreground app.
   Element commands accept --windows; tap/longpress/slide accept --nth N.
+  ui and look --wait <query> first wait up to 10 s for the element to appear.
   tap, longpress, slide, type, swipe, scroll and key wait up to 2 s for the screen to settle and print what
   changed (appeared:, gone:, changed:); --quiet skips that, --json prints it as data. type takes them before --.
   Use -- before literal arguments that begin with --.
@@ -217,8 +218,8 @@ function savedRefs() {
     return Array.isArray(saved?.refs) ? saved : null
   } catch { return null }
 }
-async function look(windows) {
-  const data = await dump(false, windows)
+async function look(windows, data) {
+  data ??= await dump(false, windows)
   const refs = data.windows.flatMap((w) => w.nodes.filter(ACTIONABLE).map((n) => ({ ...n, windowId: w.id })))
   writeFileSync(refsFile(), JSON.stringify({ windows, refs }))
   return refs
@@ -646,8 +647,8 @@ async function main([cmd, ...raw]) {
   const element = ['tap', 'longpress', 'slide', 'wait', 'gone'].includes(cmd)
   const allowed = element ? { '--windows': false } : {}
   if (['tap', 'longpress', 'slide'].includes(cmd)) allowed['--nth'] = true
-  if (cmd === 'look') allowed['--windows'] = false
-  if (cmd === 'ui') Object.assign(allowed, { '--all': false, '--windows': false, '--json': false })
+  if (cmd === 'look') Object.assign(allowed, { '--windows': false, '--wait': true })
+  if (cmd === 'ui') Object.assign(allowed, { '--all': false, '--windows': false, '--json': false, '--wait': true })
   if (['log', 'crash', 'perf', 'audio'].includes(cmd)) allowed['--package'] = true
   if (cmd === 'audio') allowed['--json'] = false
   if (cmd === 'log') allowed['--lines'] = true
@@ -678,10 +679,12 @@ async function main([cmd, ...raw]) {
     return console.log(formatDiff(d))
   }
   const windows = !!flags['--windows']
+  // The wait's last read already shows the element; reuse it.
+  const seen = flags['--wait'] ? (await waitFor(flags['--wait'], 10, true, windows), recent.data) : undefined
   switch (cmd) {
     case 'ui': {
-      arity(args, 0, 0, 'ui [--all] [--windows] [--json]')
-      const data = await dump(!!flags['--all'], windows)
+      arity(args, 0, 0, 'ui [--all] [--windows] [--json] [--wait <query>]')
+      const data = (!flags['--all'] && seen) || await dump(!!flags['--all'], windows)
       if (flags['--json']) return console.log(JSON.stringify(data))
       if (!data.windows.length) throw new Error('no accessible window; is the screen on and unlocked?')
       for (const w of data.windows) {
@@ -691,8 +694,8 @@ async function main([cmd, ...raw]) {
       return
     }
     case 'look': {
-      arity(args, 0, 0, 'look [--windows]')
-      const refs = await look(windows)
+      arity(args, 0, 0, 'look [--windows] [--wait <query>]')
+      const refs = await look(windows, seen)
       if (!refs.length) throw new Error('no actionable elements; is the screen on and unlocked? try `adrive ui`')
       return console.log(refs.map(formatRef).join('\n'))
     }

@@ -20,6 +20,8 @@ const flag = (on, name) => (on ? [name] : [])
 const opt = (value, name) => (value === undefined ? [] : [name, String(value)])
 const element = (a) => [...flag(a.windows, '--windows'), ...opt(a.nth, '--nth')]
 
+const wait = str('First wait up to 10 s for an element matching this to appear')
+
 // Calls run one at a time, so a long wait would block every other tool.
 const waiter = (cmd, verb) => ({
   description: `Wait until an element ${verb}, up to 60 seconds.`,
@@ -32,14 +34,14 @@ const waiter = (cmd, verb) => ({
 const TOOLS = {
   ui: {
     description: 'List visible elements as one line each: class, text/desc/id, flags, @centerX,centerY and [bounds]. Read this before acting.',
-    props: { all: bool('Include unlabeled, non-actionable nodes'), windows, json: bool('Return structured JSON instead of text') },
-    argv: (a) => ['ui', ...flag(a.all, '--all'), ...flag(a.windows, '--windows'), ...flag(a.json, '--json')],
+    props: { all: bool('Include unlabeled, non-actionable nodes'), windows, json: bool('Return structured JSON instead of text'), wait },
+    argv: (a) => ['ui', ...flag(a.all, '--all'), ...flag(a.windows, '--windows'), ...flag(a.json, '--json'), ...opt(a.wait, '--wait')],
     readOnly: true,
   },
   look: {
     description: 'List actionable elements with numbered refs, like [3] Button "Play". Pass "@3" as the target of tap, longpress or slide. Refs expire when the element moves; look again.',
-    props: { windows },
-    argv: (a) => ['look', ...flag(a.windows, '--windows')],
+    props: { windows, wait },
+    argv: (a) => ['look', ...flag(a.windows, '--windows'), ...opt(a.wait, '--wait')],
     readOnly: true,
   },
   tap: {

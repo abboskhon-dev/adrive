@@ -244,6 +244,26 @@ test('wait sleeps until the daemon reports a change, and ui --json hides the eve
   const shown = await fakeDaemon(ready)
   try { assert.equal(JSON.parse((await runWithDaemon(['ui', '--json'], shown.port)).stdout).seq, undefined) } finally { await shown.close() }
 })
+test('ui --wait reads the screen only after the element appears', async () => {
+  const empty = { version: 1, windows: [window([node({ text: 'Loading' })])], seq: 5 }
+  const ready = { version: 1, windows: [window([node({ text: 'Ready' })])], seq: 9 }
+  const daemon = await fakeDaemon(empty, { seq: 9 }, ready)
+  try {
+    const ui = await runWithDaemon(['ui', '--wait', 'Ready'], daemon.port)
+    assert.equal(ui.status, 0, ui.stderr)
+    assert.match(ui.stdout, /Ready/)
+    assert.doesNotMatch(ui.stdout, /Loading/)
+    assert.deepEqual(daemon.requests.map((r) => r.cmd ?? 'dump'), ['dump', 'change', 'dump'])
+  } finally { await daemon.close() }
+})
+test('mcp look passes wait through', () => {
+  const call = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'look', arguments: { wait: 'Delete' } } }
+  writeFileSync(callsFile, '')
+  rmSync(`${callsFile}.d`, { force: true })
+  const result = ok(spawnSync(process.execPath, [join(dir, 'adrive.mjs'), 'mcp'], { input: JSON.stringify(call), encoding: 'utf8', timeout: 5000,
+    env: environment({ DUMP0: JSON.stringify({ version: 1, windows: [window([node({ text: 'Loading' })])] }) }) }))
+  assert.equal(JSON.parse(result.stdout).result.content[0].text, '[1] Button "Delete"')
+})
 test('a missing or stale daemon is started with the current helper, then asked again', async () => {
   const data = { version: 1, windows: [window([node()])] }
   for (const first of [null, { error: 'stale' }]) {

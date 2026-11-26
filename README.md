@@ -42,6 +42,7 @@ The build uses JDK 17, `android-36` and build-tools `36.0.0`, so the dex rebuild
 ```sh
 adrive ui
 adrive ui --all --windows --json
+adrive look --wait 'Ready'   # wait up to 10 s for it, then list
 adrive look                  # [1] Button "Play"  [2] SeekBar ...
 adrive tap @1
 adrive slide @2 0.5
