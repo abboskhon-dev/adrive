@@ -1,6 +1,7 @@
 package dev.adrive.fixture.compose
 
 import android.os.Bundle
+import java.util.Locale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -42,7 +43,7 @@ fun Player() {
   }
   Column(Modifier.padding(start = 24.dp, top = 48.dp, end = 24.dp), horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    Text("%d:%02d.%03d".format(ms / 60000, ms / 1000 % 60, ms % 1000), fontSize = 32.sp)
+    Text(String.format(Locale.ROOT, "%d:%02d.%03d", ms / 60000, ms / 1000 % 60, ms % 1000), fontSize = 32.sp)
     LinearProgressIndicator(progress = { (ms % 10000) / 10000f }, modifier = Modifier.fillMaxWidth())
     Button(onClick = { taps++ }) { Text("Mute Bass") }
     Text("taps $taps")

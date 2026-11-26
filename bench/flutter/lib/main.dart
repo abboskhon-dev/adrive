@@ -11,9 +11,15 @@ class Player extends StatefulWidget {
 }
 
 class _PlayerState extends State<Player> with SingleTickerProviderStateMixin {
-  late final Ticker _ticker = createTicker((d) => setState(() => _ms = d.inMilliseconds))..start();
+  late final Ticker _ticker;
   int _ms = 0;
   int _taps = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = createTicker((d) => setState(() => _ms = d.inMilliseconds))..start();
+  }
 
   @override
   void dispose() {

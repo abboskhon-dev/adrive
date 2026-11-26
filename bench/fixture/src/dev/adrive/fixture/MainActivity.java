@@ -9,6 +9,7 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import java.util.Locale;
 
 // A player-like screen: the elapsed label and progress bar change on every frame, forever.
 public class MainActivity extends Activity implements Choreographer.FrameCallback {
@@ -71,7 +72,7 @@ public class MainActivity extends Activity implements Choreographer.FrameCallbac
 
   @Override public void doFrame(long nanos) {
     long ms = SystemClock.uptimeMillis() - start;
-    elapsed.setText(String.format("%d:%02d.%03d", ms / 60000, ms / 1000 % 60, ms % 1000));
+    elapsed.setText(String.format(Locale.ROOT, "%d:%02d.%03d", ms / 60000, ms / 1000 % 60, ms % 1000));
     progress.setProgress((int) (ms % 10000 / 10));
     Choreographer.getInstance().postFrameCallback(this);
   }
