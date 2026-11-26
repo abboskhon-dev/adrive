@@ -35,13 +35,13 @@ const TOOLS = {
   ui: {
     description: 'List visible elements as one line each: class, text/desc/id, flags, @centerX,centerY and [bounds]. Read this before acting.',
     props: { all: bool('Include unlabeled, non-actionable nodes'), windows, json: bool('Return structured JSON instead of text'), wait },
-    argv: (a) => ['ui', ...flag(a.all, '--all'), ...flag(a.windows, '--windows'), ...flag(a.json, '--json'), ...opt(a.wait, '--wait')],
+    argv: (a) => ['ui', ...flag(a.all, '--all'), ...flag(a.windows, '--windows'), ...flag(a.json, '--json'), ...opt(a.wait || undefined, '--wait')],
     readOnly: true,
   },
   look: {
     description: 'List actionable elements with numbered refs, like [3] Button "Play". Pass "@3" as the target of tap, longpress or slide. Refs expire when the element moves; look again.',
     props: { windows, wait },
-    argv: (a) => ['look', ...flag(a.windows, '--windows'), ...opt(a.wait, '--wait')],
+    argv: (a) => ['look', ...flag(a.windows, '--windows'), ...opt(a.wait || undefined, '--wait')],
     readOnly: true,
   },
   tap: {

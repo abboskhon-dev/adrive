@@ -33,7 +33,8 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
 
   --package defaults to the foreground app.
   Element commands accept --windows; tap/longpress/slide accept --nth N.
-  ui and look --wait <query> first wait up to 10 s for the element to appear.
+  ui and look --wait <query> first wait up to 10 s for an element only the new screen has (matching
+  falls back to substring, so 'Ready' also matches 'Not ready'); on a timeout they still list the screen.
   tap, longpress, slide, type, swipe, scroll and key wait up to 2 s for the screen to settle and print what
   changed (appeared:, gone:, changed:); --quiet skips that, --json prints it as data. type takes them before --.
   Use -- before literal arguments that begin with --.
@@ -159,6 +160,7 @@ async function daemonAsk(fields) {
 let lastSeq
 // The last read, so an action reuses its target lookup as the screen before.
 let recent = null
+let lastRead = null
 async function dump(all = false, windows = false) {
   let result = await daemonAsk({ all, windows })
   if (result?.error) throw new Error(`adrive helper failed: ${result.error}`)
@@ -171,6 +173,7 @@ async function dump(all = false, windows = false) {
   if (result.version !== 1 || !Array.isArray(result.windows)) throw new Error('unsupported helper output; rebuild with ./build.sh')
   delete result.seq
   if (!all) recent = { windows, data: result }
+  lastRead = result
   return result
 }
 
@@ -187,9 +190,9 @@ function formatNode(n) {
   return fields.join(' ')
 }
 
-async function find(query, nth = 0, windows = false) {
+async function find(query, nth = 0, windows = false, all = false) {
   const q = required(query, 'query').toLowerCase()
-  const nodes = (await dump(false, windows)).windows.flatMap((w) => w.nodes.map((n) => ({ ...n, windowId: w.id })))
+  const nodes = (await dump(all, windows)).windows.flatMap((w) => w.nodes.map((n) => ({ ...n, windowId: w.id })))
   const keys = (n) => [n.text, n.desc, n.id, n.id.split('/').at(-1)].map((s) => s.toLowerCase())
   let hits = nodes.filter((n) => keys(n).includes(q))
   if (!hits.length) hits = nodes.filter((n) => keys(n).some((k) => k.includes(q)))
@@ -255,6 +258,16 @@ async function point(target, nth, windows) {
   return { ...node, line: formatNode(node) }
 }
 
+// --wait reuses the read it ended on; on a timeout it returns that screen and the error.
+async function read(query, all, windows) {
+  if (!query) return { data: await dump(all, windows) }
+  try { await waitFor(query, 10, true, windows, all) } catch (e) {
+    if (!lastRead || !e.message.startsWith('timed out')) throw e
+    return { data: lastRead, error: e }
+  }
+  return { data: lastRead }
+}
+
 // `wm size` is always portrait; the display's cur= size follows rotation.
 function screenSize() {
   const m = sh('dumpsys window displays').match(/\bcur=(\d+)x(\d+)/) ?? sh('wm size').match(/(\d+)x(\d+)\s*$/)
@@ -262,11 +275,11 @@ function screenSize() {
   return { w: +m[1], h: +m[2] }
 }
 
-async function waitFor(query, seconds, present, windows) {
+async function waitFor(query, seconds, present, windows, all = false) {
   const end = Date.now() + seconds * 1000
   while (Date.now() < end) {
     const start = Date.now()
-    if (!!(await find(query, 0, windows)) === present) return
+    if (!!(await find(query, 0, windows, all)) === present) return
     const left = end - Date.now()
     // The daemon answers when the screen changes; at most 10 reads a second on animating screens.
     const changed = lastSeq !== undefined && left > 0 && await daemonAsk({ cmd: 'change', seq: lastSeq, timeoutMs: Math.min(left, 10000) })
@@ -679,25 +692,27 @@ async function main([cmd, ...raw]) {
     return console.log(formatDiff(d))
   }
   const windows = !!flags['--windows']
-  // The wait's last read already shows the element; reuse it.
-  const seen = flags['--wait'] ? (await waitFor(flags['--wait'], 10, true, windows), recent.data) : undefined
   switch (cmd) {
     case 'ui': {
       arity(args, 0, 0, 'ui [--all] [--windows] [--json] [--wait <query>]')
-      const data = (!flags['--all'] && seen) || await dump(!!flags['--all'], windows)
-      if (flags['--json']) return console.log(JSON.stringify(data))
-      if (!data.windows.length) throw new Error('no accessible window; is the screen on and unlocked?')
-      for (const w of data.windows) {
+      const { data, error } = await read(flags['--wait'], !!flags['--all'], windows)
+      if (flags['--json']) console.log(JSON.stringify(data))
+      else if (!data.windows.length && !error) throw new Error('no accessible window; is the screen on and unlocked?')
+      else for (const w of data.windows) {
         console.log(`package=${w.package} window=${w.id} type=${w.type} layer=${w.layer}`)
         for (const n of w.nodes) console.log(formatNode(n))
       }
+      if (error) throw error
       return
     }
     case 'look': {
       arity(args, 0, 0, 'look [--windows] [--wait <query>]')
-      const refs = await look(windows, seen)
-      if (!refs.length) throw new Error('no actionable elements; is the screen on and unlocked? try `adrive ui`')
-      return console.log(refs.map(formatRef).join('\n'))
+      const { data, error } = await read(flags['--wait'], false, windows)
+      const refs = await look(windows, data)
+      if (!refs.length && !error) throw new Error('no actionable elements; is the screen on and unlocked? try `adrive ui`')
+      if (refs.length) console.log(refs.map(formatRef).join('\n'))
+      if (error) throw error
+      return
     }
     case 'wait':
     case 'gone':

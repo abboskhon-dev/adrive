@@ -13,7 +13,7 @@ release retitles it `## <version> — <date>`.
 - **Claude Code skill** (#23)
   - `adrive skill install` adds a skill that teaches Claude Code the `look`, act, read-the-change loop from the shell.
 - **`ui --wait` and `look --wait`**
-  - `--wait <query>` waits up to 10 s for an element to appear before reading the screen, so a read right after an action doesn't return the old screen.
+  - `--wait <query>` waits up to 10 s for an element to appear before reading the screen, so a read right after an action doesn't return the old screen. On a timeout it still lists the last screen.
 
 ## 0.1.0 — 2026-11-22
 
