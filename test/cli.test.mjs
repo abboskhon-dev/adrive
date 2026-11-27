@@ -28,6 +28,10 @@ else if (cmd.includes('app_process') && process.env.BUSY) {
   process.exit(2);
 }
 else if (cmd.startsWith('ps -A')) process.stdout.write(process.env.PS || '');
+else if (cmd.includes('--set-text')) {
+  const text = Buffer.from(cmd.match(/--set-text (\\S+)/)[1], 'base64').toString();
+  process.stdout.write(process.env.SET_TEXT ?? JSON.stringify({ ok: true, value: text, text, password: false }));
+}
 else if (cmd.includes('app_process')) {
   const n = Number(fs.existsSync(process.env.CALLS + '.d') ? fs.readFileSync(process.env.CALLS + '.d', 'utf8') : 0);
   fs.writeFileSync(process.env.CALLS + '.d', String(n + 1));
@@ -104,6 +108,8 @@ async function fakeDaemon(...replies) {
 function ok(result) { assert.equal(result.status, 0, result.stderr); return result }
 const shellCommand = (...args) => ['shell', args.map(quote).join(' ')]
 const isInput = (c) => c[0] === 'shell' && c[1].startsWith("'input'")
+const typed = (result) => result.calls.map((c) => c[1]?.match(/--set-text (\S+)( --append)?/)).filter(Boolean)
+  .map((m) => Buffer.from(m[1], 'base64').toString() + (m[2] ? ' [append]' : ''))
 
 test('bad actions fail before invoking adb', () => {
   for (const args of [ ['tap'], ['tap', ''], ['longpress'], ['slide', '0.5'],
@@ -138,10 +144,11 @@ test('JSON output preserves windows and values; --windows reaches helper', () =>
   assert.deepEqual(tap.calls.filter(isInput).at(-1), shellCommand('input', 'tap', 20, 200))
 })
 test('literal --nth and %s are typed without option or Android substitution', () => {
-  assert.deepEqual(ok(run(['type', '--nth', '2'])).calls.filter(isInput), [shellCommand('input', 'text', '--nth%s2')])
-  const result = ok(run(['type', 'a %s %%s']))
+  assert.deepEqual(ok(run(['type', '--keys', '--', '--nth', '2'])).calls.filter(isInput), [shellCommand('input', 'text', '--nth%s2')])
+  const result = ok(run(['type', '--keys', '--', 'a %s %%s']))
   assert.deepEqual(result.calls.filter(isInput), ['a%s', '%', 's%s', '%', '%', 's'].map(v => shellCommand('input', 'text', v)))
-  assert.equal(run(['type', '한글']).status, 1)
+  assert.match(run(['type', '--keys', '--', '한글']).stderr, /--keys supports printable ASCII only/)
+  assert.match(run(['type', '--keys', '--append', '--', 'x']).stderr, /--keys always appends/)
 })
 test('shell quoting round trips punctuation without interpretation', () => {
   const value = "a'b; echo INJECTED $(echo bad) `echo bad` %s &"
@@ -215,7 +222,7 @@ test('a running daemon answers without starting the helper', async () => {
     const ui = await runWithDaemon(['ui', '--json', '--all', '--windows'], daemon.port)
     assert.equal(ui.status, 0, ui.stderr)
     assert.deepEqual(JSON.parse(ui.stdout), data)
-    assert.deepEqual(daemon.requests, [{ hash: fixtureHash, protocol: 2, all: true, windows: true }])
+    assert.deepEqual(daemon.requests, [{ hash: fixtureHash, protocol: 3, all: true, windows: true }])
     assert.deepEqual(ui.calls, [['forward', '--list']])
   } finally { await daemon.close() }
 })
@@ -225,7 +232,7 @@ test('actions go through the daemon, and fall back to input when it cannot injec
   try {
     const tap = await runWithDaemon(['tap', '--quiet', 'From daemon'], daemon.port)
     assert.equal(tap.status, 0, tap.stderr)
-    assert.deepEqual(daemon.requests[1], { hash: fixtureHash, protocol: 2, cmd: 'tap', x: 7, y: 200 })
+    assert.deepEqual(daemon.requests[1], { hash: fixtureHash, protocol: 3, cmd: 'tap', x: 7, y: 200 })
     assert.ok(!tap.calls.some((c) => c[1]?.startsWith("'input'")))
     const fallback = await runWithDaemon(['tap', '--quiet', 'From daemon'], daemon.port)
     assert.deepEqual(fallback.calls.filter(isInput).at(-1), shellCommand('input', 'tap', 7, 200))
@@ -358,6 +365,9 @@ test('a busy UiAutomation names the client that holds it', () => {
   assert.match(busy(' 8 app_process /system/bin com.android.commands.am.Am instrument -w com.example.test/x\n').stderr, /an instrumentation test \(pid 8\)/)
   assert.match(busy(' 7 com.example.instrumentpanel\n 6 com.example.Dump\n').stderr, /another UI automation client holds the device \(uiautomator, Appium/)
   assert.match(run(['ui'], { BUSY: 'stdout', PS: ' 4242 uiautomator events\n' }).stderr, /uiautomator \(pid 4242\)/)
+  assert.match(run(['type', '--', 'hi'], { BUSY: '1', PS: '' }).stderr, /holds the device .*; type --keys still works for printable ASCII/)
+  const registered = JSON.stringify({ version: 1, windows: [window([node({ text: 'This email is already registered' })])] })
+  assert.match(ok(run(['ui'], { DUMP: registered })).stdout, /already registered/)
 })
 test('a starting helper is waited on until it answers or exits', async () => {
   const daemon = await fakeDaemon(null)
@@ -660,12 +670,34 @@ test('a layout that keeps moving is reported after 2 s, not waited on forever', 
 test('type takes options only before an explicit --', () => {
   const quiet = ok(run(['type', '--quiet', '--', 'hi']))
   assert.equal(quiet.stdout, '')
-  assert.deepEqual(quiet.calls.filter(isInput), [shellCommand('input', 'text', 'hi')])
-  assert.deepEqual(ok(run(['type', '--quiet', 'hi'])).calls.filter(isInput), [shellCommand('input', 'text', '--quiet%shi')])
+  assert.deepEqual(typed(quiet), ['hi'])
+  for (const flag of ['--quiet', '--append', '--keys', '--json'])
+    assert.match(run(['type', flag, 'hi']).stderr, new RegExp(`put type options before --: adrive type ${flag} -- <text>`))
+  const empty = ok(run(['type', '--quiet', '--', '']))
+  assert.ok(empty.calls.some((c) => / --set-text - ?/.test(c[1] ?? '')), 'empty text is sent as -')
+  assert.deepEqual(typed(ok(run(['type', '--append', '--quiet', '--', 'hi']))), ['hi [append]'])
   for (const text of [['hello', '--', 'world'], ['--foo', '--', 'x']]) {
-    assert.deepEqual(ok(run(['type', '--quiet', '--', ...text])).calls.filter(isInput), [shellCommand('input', 'text', text.join('%s'))])
-    assert.deepEqual(ok(run(['type', ...text])).calls.filter(isInput), [shellCommand('input', 'text', text.join('%s'))])
+    assert.deepEqual(typed(ok(run(['type', '--quiet', '--', ...text]))), [text.join(' ')])
+    assert.deepEqual(typed(ok(run(['type', ...text]))), [text.join(' ')])
   }
+})
+test('type sets any Unicode text and fails when the field shows something else', async () => {
+  for (const text of ['Größe', '日本語', '👍🏽 ok', 'line one\nline two', "a'b; $(echo bad) %s"]) {
+    const result = ok(run(['type', '--quiet', '--', text]))
+    assert.deepEqual(typed(result), [text])
+    assert.deepEqual(result.calls.filter(isInput), [])
+  }
+  const shown = (fields) => ({ SET_TEXT: JSON.stringify({ ok: true, value: 'line one\nline two', password: false, ...fields }) })
+  assert.match(run(['type', '--quiet', '--', 'line one\nline two'], shown({ text: 'line oneline two' })).stderr,
+    /the field shows "line oneline two", not "line one\\nline two"/)
+  ok(run(['type', '--quiet', '--', 'secret'], shown({ text: '••••••', password: true })))
+  assert.match(run(['type', '--quiet', '--', 'x'], { SET_TEXT: '{"error":"no focused text field; tap one first"}' }).stderr, /no focused text field/)
+  const daemon = await fakeDaemon('{"accepted":true}\n{"ok":true,"value":"日本語","text":"日本語","password":false}\n')
+  try {
+    const result = await runWithDaemon(['type', '--quiet', '--', '日本語'], daemon.port)
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(daemon.requests, [{ hash: fixtureHash, protocol: 3, cmd: 'text', text: '日本語', append: false }])
+  } finally { await daemon.close() }
 })
 test('a toggled switch is a change, and the daemon settles once no event arrives', async () => {
   const mute = (checked) => node({ class: 'android.widget.Switch', text: 'Mute', checkable: true, checked })

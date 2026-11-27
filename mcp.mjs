@@ -60,9 +60,10 @@ const TOOLS = {
     argv: (a) => ['slide', ...element(a), '--', a.query, String(a.fraction)],
   },
   type: {
-    description: 'Type printable ASCII into the focused field.',
-    props: { text: str('Literal text') }, required: ['text'],
-    argv: (a) => ['type', '--', a.text],
+    description: 'Set the focused field\'s text (any Unicode, newlines too) and check that the field shows it.',
+    props: { text: str('Literal text'), append: bool('Add to the field\'s current text instead of replacing it'),
+      keys: bool('Type printable ASCII as key events, for fields that need real keystrokes') }, required: ['text'],
+    argv: (a) => ['type', ...flag(a.append, '--append'), ...flag(a.keys, '--keys'), '--', a.text],
   },
   swipe: {
     description: 'Swipe between two screen points.',

@@ -11,11 +11,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
@@ -37,6 +39,7 @@ class MainActivity : ComponentActivity() {
 fun Player() {
   var ms by remember { mutableLongStateOf(0L) }
   var taps by remember { mutableIntStateOf(0) }
+  var note by remember { mutableStateOf("") }
   LaunchedEffect(Unit) {
     val start = withFrameMillis { it }
     while (true) withFrameMillis { ms = it - start }
@@ -47,6 +50,7 @@ fun Player() {
     LinearProgressIndicator(progress = { (ms % 10000) / 10000f }, modifier = Modifier.fillMaxWidth())
     Button(onClick = { taps++ }) { Text("Mute Bass") }
     Text("taps $taps")
+    OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), placeholder = { Text("Note") })
     LazyColumn(Modifier.fillMaxWidth()) {
       items(40) { Text("Stem $it", fontSize = 9.sp) }
     }

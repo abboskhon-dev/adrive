@@ -13,7 +13,7 @@ const remoteDex = '/data/local/tmp/adrive.dex'
 const helperRun = `ANDROID_DATA=/data/local/tmp CLASSPATH=${remoteDex} app_process /system/bin Dump`
 const helperSocket = 'localabstract:adrive'
 // Matches PROTOCOL in helper/Dump.java.
-const PROTOCOL = 2
+const PROTOCOL = 3
 
 const USAGE = `adrive: drive any Android app (release builds too) over adb. Device: ANDROID_SERIAL.
 
@@ -22,7 +22,8 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   tap <query|x,y|@ref> [--nth N]  tap the element matching text/desc/id (exact first, then substring)
   longpress <query|x,y|@ref>
   slide <query|@ref> <0..1>      drag a slider to a fraction of its width
-  type <text>                type into the focused field
+  type <text>                set the focused field's text (any Unicode, newlines too) and check it;
+                             --append adds, --keys types ASCII key events (options before --)
   swipe <x1> <y1> <x2> <y2> [ms]
   scroll up|down|left|right
   key back|home|enter|del|tab|<KEYCODE>
@@ -185,20 +186,28 @@ let lastSeq
 // The last read, so an action reuses its target lookup as the screen before.
 let recent = null
 let lastRead = null
+function busyError() {
+  return new Error(automationBusy() + (acting === 'type' ? '; type --keys still works for printable ASCII' : ''))
+}
+function helperOnce(flags) {
+  ensureHelper()
+  let out
+  try { out = sh(`${helperRun}${flags}`) } catch (e) {
+    if (/already registered/.test(e.message)) throw busyError()
+    throw e
+  }
+  try { return JSON.parse(out) } catch {
+    // Without shell_v2, adb merges the helper's stderr into stdout and exits 0.
+    if (/already registered/.test(out)) throw busyError()
+    throw new Error('invalid helper JSON; rebuild with ./build.sh')
+  }
+}
 async function dump(all = false, windows = false) {
   let result = await daemonAsk({ all, windows })
   if (result?.error) throw new Error(`adrive helper failed: ${result.error}`)
   lastSeq = result?.seq
   if (!result) {
-    ensureHelper()
-    let out
-    try { out = sh(`${helperRun}${all ? ' --all' : ''}${windows ? ' --windows' : ''}`) } catch (e) {
-      if (/already registered/.test(e.message)) throw new Error(automationBusy())
-      throw e
-    }
-    // Without shell_v2, adb merges the helper's stderr into stdout and exits 0.
-    if (/already registered/.test(out)) throw new Error(automationBusy())
-    try { result = JSON.parse(out) } catch { throw new Error('invalid helper JSON; rebuild with ./build.sh') }
+    result = helperOnce(`${all ? ' --all' : ''}${windows ? ' --windows' : ''}`)
   }
   if (result.version !== 1 || !Array.isArray(result.windows)) throw new Error('unsupported helper output; rebuild with ./build.sh')
   delete result.seq
@@ -411,6 +420,15 @@ async function inject(request, ...fallback) {
   if (reply?.ok) return
   if (reply?.error && !reply.restart) throw new Error(`adrive helper failed: ${reply.error}`)
   shell('input', ...fallback)
+}
+async function setText(text, append) {
+  let reply = await daemonAsk({ cmd: 'text', text, append })
+  if (!reply) {
+    // Empty base64 would leave the helper without an argument.
+    reply = helperOnce(` --set-text ${Buffer.from(text).toString('base64') || '-'}${append ? ' --append' : ''}`)
+  }
+  if (reply.error) throw new Error(`adrive helper failed: ${reply.error}`)
+  return reply
 }
 const swipe = (x1, y1, x2, y2, ms) => inject({ cmd: 'swipe', x1, y1, x2, y2, ms }, 'swipe', x1, y1, x2, y2, ms)
 
@@ -643,7 +661,8 @@ function formatAudio(pkg, pids, threads) {
 
 const nthFlag = (flags) => flags['--nth'] === undefined ? undefined : number(flags['--nth'], '--nth')
 // Returns the line to print, or null.
-async function act(cmd, args, nth, windows, ready = async () => {}) {
+async function act(cmd, args, flags, windows, ready = async () => {}) {
+  const nth = nthFlag(flags)
   switch (cmd) {
     case 'tap':
     case 'longpress': {
@@ -667,14 +686,21 @@ async function act(cmd, args, nth, windows, ready = async () => {}) {
       return `slid to ${fraction} ${node.line}`
     }
     case 'type': {
-      arity(args, 1, Infinity, 'type <text>')
+      arity(args, 1, Infinity, 'type [--append|--keys] <text>')
       const text = args.join(' ')
-      // Android input text only reliably supports printable ASCII key events.
-      if (/[^\x20-\x7e]/.test(text)) throw new Error('type supports printable ASCII only; Unicode/newlines require an IME')
-      // Isolate every literal percent: Android converts %s to a space per invocation.
-      const chunks = text.split(/(%)/).filter(Boolean)
+      if (flags['--keys']) {
+        if (flags['--append']) throw new Error('--keys always appends; drop --append')
+        // Android input text only reliably supports printable ASCII key events.
+        if (/[^\x20-\x7e]/.test(text)) throw new Error('type --keys supports printable ASCII only; drop --keys to set Unicode text')
+        // Isolate every literal percent: Android converts %s to a space per invocation.
+        const chunks = text.split(/(%)/).filter(Boolean)
+        await ready()
+        for (const chunk of chunks) shell('input', 'text', chunk.replace(/ /g, '%s'))
+        return null
+      }
       await ready()
-      for (const chunk of chunks) shell('input', 'text', chunk.replace(/ /g, '%s'))
+      const r = await setText(text, !!flags['--append'])
+      if (!r.password && r.text !== r.value) throw new Error(`the field shows ${JSON.stringify(r.text)}, not ${JSON.stringify(r.value)}`)
       return null
     }
     case 'swipe': {
@@ -718,22 +744,24 @@ async function main([cmd, ...raw]) {
   if (cmd === 'perf') allowed['--reset'] = false
   if (cmd === 'run') Object.assign(allowed, { '--package': true, '--trace': true, '--json': false })
   if (ACTIONS.has(cmd)) Object.assign(allowed, { '--quiet': false, '--json': false })
+  if (cmd === 'type') Object.assign(allowed, { '--append': false, '--keys': false })
   // Text is literal, including --nth; options go before an explicit --.
   const cut = raw.indexOf('--'), lead = raw.slice(0, Math.max(cut, 0))
   const { args, flags } = cmd !== 'type' ? options(raw, allowed)
     : cut >= 0 && lead.every((a) => Object.hasOwn(allowed, a)) ? { args: raw.slice(cut + 1), flags: options(lead, allowed).flags }
     : { args: raw, flags: {} }
+  if (cmd === 'type' && cut < 0 && Object.hasOwn(allowed, raw[0])) throw new Error(`put type options before --: adrive type ${raw[0]} -- <text>`)
   if (ACTIONS.has(cmd)) {
     acting = cmd
     if (flags['--quiet'] && flags['--json']) throw new Error('--quiet and --json cannot be combined')
     if (flags['--quiet'] || measuring) {
-      const line = await act(cmd, args, nthFlag(flags), !!flags['--windows'])
+      const line = await act(cmd, args, flags, !!flags['--windows'])
       return line && console.log(line)
     }
     const windows = !!flags['--windows']
     let before, start
     recent = null
-    const line = await act(cmd, args, nthFlag(flags), windows, async () => {
+    const line = await act(cmd, args, flags, windows, async () => {
       before = recent?.windows === windows ? recent.data : await dump(false, windows)
       start = Date.now()
     })

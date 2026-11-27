@@ -7,6 +7,9 @@ release retitles it `## <version> — <date>`.
 
 ### Added
 
+- **`type` takes any Unicode** (#30)
+  - `type` sets the focused field's text through accessibility, so accents, CJK, emoji and newlines work, and checks the field shows it.
+  - It now replaces the field's text; `--append` adds to it, and `--keys` keeps the old key-event typing for printable ASCII.
 - **Clearer helper failures** (#27)
   - When another client holds UiAutomation, adrive names it: uiautomator, Appium, Maestro, another adrive helper or an instrumentation test.
   - An input the helper accepted is never sent twice: if the helper dies before answering, the command fails and says so.
