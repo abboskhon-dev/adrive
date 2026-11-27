@@ -36,7 +36,7 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   ui and look --wait <query> first wait up to 10 s for an element only the new screen has (matching
   falls back to substring, so 'Ready' also matches 'Not ready'); on a timeout they still list the screen.
   tap, longpress, slide, type, swipe, scroll and key wait up to 2 s for the screen to settle and print what
-  changed (appeared:, gone:, changed:); --quiet skips that, --json prints it as data. type takes them before --.
+  changed (left, appeared:, gone:, changed:); --quiet skips that, --json prints it as data. type takes them before --.
   Use -- before literal arguments that begin with --.
   log [regex] [--package pkg] [--lines N]  recent logcat lines from the app's process (default 200)
   log-clear                      clear logcat, to read only what happens next
@@ -314,10 +314,11 @@ async function settle(windows, start) {
   }
   return done(false)
 }
+// Type -1 is the active window; with --windows the topmost can be the keyboard or status bar.
+const appPackage = (data) => data.windows.find((w) => w.type === 1 || w.type === -1)?.package ?? null
 function screenDiff(beforeData, { data, nodes, settled, animating }) {
   const keyed = (list) => new Map(list.map((n) => [nodeKey(n), n]))
   const was = keyed(nodesOf(beforeData)), now = keyed(nodes)
-  const pkg = data.windows[0]?.package
   let appeared = [...now].filter(([k]) => !was.has(k)).map(([, n]) => n)
   let gone = [...was].filter(([k]) => !now.has(k)).map(([, n]) => n)
   // A label that changed more than once while settling is an animation, not a result.
@@ -329,7 +330,8 @@ function screenDiff(beforeData, { data, nodes, settled, animating }) {
   const paired = new Set(changed.flatMap((c) => [c.from, c.to]))
   appeared = appeared.filter((n) => !paired.has(n))
   gone = gone.filter((n) => !paired.has(n))
-  return { settled, ...(pkg !== beforeData.windows[0]?.package && { screen: pkg ?? null }),
+  const from = appPackage(beforeData), to = appPackage(data)
+  return { settled, ...(from !== to && { left: { from, to } }),
     appeared, gone, changed: changed.filter((c) => !animating.has(box(c.to))) }
 }
 // A new screen would list every node; the full lists stay in --json.
@@ -345,7 +347,7 @@ function changeTo({ from, to }) {
   return parts.join(' ')
 }
 function formatDiff(d) {
-  const lines = [...(d.screen !== undefined ? [`screen: ${d.screen ?? 'no window'}`] : []),
+  const lines = [...(d.left ? [`left ${d.left.from ?? 'no window'} -> ${d.left.to ?? 'no window'}`] : []),
     ...capped(d.appeared, 'appeared', describe), ...capped(d.gone, 'gone', describe),
     ...capped(d.changed, 'changed', (c) => `${describe(c.from)} -> ${changeTo(c)}`)]
   if (!lines.length) lines.push('no change')
