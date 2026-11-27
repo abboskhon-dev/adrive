@@ -14,7 +14,7 @@ description: Drive and inspect an Android app on a connected device or emulator 
 3. Read what the action prints: `appeared: …`, `gone: …`, `changed: … -> …` or `no change`. A `left <app> -> <other>` line means the action left the app; the next commands would act on the other one. That is the new screen; don't `look` again unless you need refs for elements that just appeared.
 4. Repeat. Wait for slow screens with `adrive wait 'Ready' 10`, `adrive gone 'Loading'`, or `adrive look --wait 'Ready'`.
 
-A ref fails without touching the device if its element moved or is gone; run `look` again. Without refs, `tap` also takes text, a content description, a resource id, or `x,y` (`adrive tap 540,1200`). Use `adrive tap x,y`, not `adb shell input tap`: it waits for the screen to settle and prints what changed.
+A ref follows its element if it moved (the line says `moved from`), and fails without touching the device when it can't find the element again unambiguously; run `look` again. Without refs, `tap` also takes text, a content description, a resource id, or `x,y` (`adrive tap 540,1200`). Use `adrive tap x,y`, not `adb shell input tap`: it waits for the screen to settle and prints what changed.
 
 ## When the tree is not enough
 
