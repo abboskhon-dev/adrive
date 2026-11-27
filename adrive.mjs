@@ -208,6 +208,7 @@ const ACTIONABLE = (n) => n.clickable || n.longClickable || n.editable || n.scro
 const same = (keys) => (a, b) => keys.every((k) => a[k] === b[k])
 const sameBox = same(['class', 'id', 'left', 'top', 'right', 'bottom'])
 const sameNode = same(['class', 'text', 'desc', 'id', 'left', 'top', 'right', 'bottom'])
+const sameLabel = (a) => (b) => same(['class', 'text', 'desc', 'id'])(a, b)
 // Not in /tmp: it is shared between users on Linux.
 function refsFile() {
   const serial = process.env.ANDROID_SERIAL || adb(['get-serialno']).trim()
@@ -238,12 +239,29 @@ async function resolveRef(ref, saved, nth, windows) {
   if (windows !== saved.windows) throw new Error(`@${ref} is from \`adrive look${saved.windows ? ' --windows' : ''}\`; pass the same --windows, or look again`)
   const node = saved.refs[+ref - 1]
   if (!node) throw new Error(`@${ref} is not in the last look (${saved.refs.length} refs); run \`adrive look\``)
-  const now = (await dump(false, windows)).windows.flatMap((w) => w.nodes)
-  // An ID unique in both dumps survives a live label like "Downloading 42%".
-  const byId = node.id && saved.refs.filter((n) => n.id === node.id).length === 1 ? now.filter((n) => n.id === node.id) : []
-  const found = byId.length === 1 ? (sameBox(byId[0], node) ? byId[0] : null) : now.find((n) => sameNode(n, node))
-  if (!found) throw new Error(`@${ref} ${formatRef(node, +ref - 1)} is gone or moved; run \`adrive look\``)
-  return { ...found, line: formatNode(found) }
+  // With --windows a ref stays in its own window, so it cannot jump to a lookalike in a dialog.
+  const now = (await dump(false, windows)).windows.filter((w) => !windows || w.id === node.windowId).flatMap((w) => w.nodes)
+  const found = now.find((n) => sameNode(n, node)) ?? sameIdInPlace(node, saved, now) ?? follow(`@${ref} ${formatRef(node, +ref - 1)}`, node, saved, now)
+  const moved = (found.x !== node.x || found.y !== node.y) && ` (@${ref} moved from @${node.x},${node.y})`
+  return { ...found, line: formatNode(found) + (moved || '') }
+}
+// A unique ID keeps the ref through a live label like "Downloading 42%", but only in the same box.
+function sameIdInPlace(node, saved, now) {
+  if (!node.id || saved.refs.filter((n) => n.id === node.id).length !== 1) return undefined
+  const byId = now.filter((n) => n.id === node.id)
+  return byId.length === 1 && sameBox(byId[0], node) ? byId[0] : undefined
+}
+const inside = (outer, n) => outer !== n && outer.left <= n.left && outer.top <= n.top && outer.right >= n.right && outer.bottom >= n.bottom
+function follow(name, node, saved, now) {
+  const fail = (why) => { throw new Error(`${name} ${why}; run \`adrive look\``) }
+  if (!(node.text || node.desc || node.id)) fail('moved and has no label to follow')
+  if (saved.refs.filter(sameLabel(node)).length > 1) fail('moved and the last look had others like it')
+  // A list recycles rows, so a lookalike after a scroll may be a different row.
+  if (saved.refs.some((n) => n.scrollable && n.windowId === node.windowId && inside(n, node))) fail('moved inside a scrolling list')
+  const hits = now.filter((n) => ACTIONABLE(n) && sameLabel(node)(n))
+  if (!hits.length) fail('is gone or changed its label')
+  if (hits.length > 1) fail(`moved and now matches ${hits.length} elements`)
+  return hits[0]
 }
 async function point(target, nth, windows) {
   required(target, 'target')

@@ -528,7 +528,7 @@ test('mcp answers non-object messages and keeps serving', () => {
   assert.deepEqual(ping.result, {})
 })
 
-test('look numbers actionable elements, and a ref acts only while the element is unmoved', () => {
+test('look numbers actionable elements, and a ref follows its element only while one node matches', () => {
   const serial = `look-${process.pid}`
   const play = node({ text: 'Play', x: 10, y: 20 })
   const screen = (nodes) => ({ DUMP: JSON.stringify({ version: 1, windows: [window(nodes)] }), SERIALNO: serial, ANDROID_SERIAL: '' })
@@ -545,17 +545,46 @@ test('look numbers actionable elements, and a ref acts only while the element is
   assert.deepEqual(ok(run(['slide', '@4', '1'], screen([seek]))).calls.filter(isInput).at(-1), shellCommand('input', 'swipe', 24, 500, 976, 500, 700))
   // A unique ID keeps the ref through a changed label.
   ok(run(['tap', '@3'], screen([{ ...field, text: 'Ada' }])))
+  // A moved element is tapped where it is now.
+  const moved = ok(run(['tap', '@1'], screen([node({ text: 'Play', x: 60, y: 900, top: 850, bottom: 950 })])))
+  assert.match(moved.stdout, /^tapped Button text="Play" .*@60,900 .* \(@1 moved from @10,20\)\n/)
+  assert.deepEqual(moved.calls.filter(isInput).at(-1), shellCommand('input', 'tap', 60, 900))
+  assert.deepEqual(ok(run(['tap', '@3'], screen([{ ...field, x: 5, y: 6, top: 0 }]))).calls.filter(isInput).at(-1), shellCommand('input', 'tap', 5, 6))
   for (const [args, now, error] of [
-    [['tap', '@1'], [node({ text: 'Play', left: 60 })], /@1 \[1\] Button "Play" is gone or moved/],
+    [['tap', '@1'], [node()], /@1 \[1\] Button "Play" is gone or changed its label/],
+    [['tap', '@1'], [node({ text: 'Play', clickable: false, top: 900 })], /@1 .* is gone/],
+    [['tap', '@3'], [{ ...field, text: 'Bob', top: 0 }], /@3 .* is gone or changed its label/],
+    [['tap', '@1'], [node({ text: 'Play', top: 0 }), node({ text: 'Play', top: 900 })], /@1 .* moved and now matches 2 elements/],
+    [['tap', '@4'], [{ ...seek, top: 0 }], /@4 .* moved and has no label to follow/],
     [['tap', '@9'], [play], /@9 is not in the last look \(4 refs\)/],
-    [['tap', '@3'], [{ ...field, top: 0 }], /@3 .* is gone or moved/],
-    [['tap', '@3'], [{ ...field, text: 'a' }, { ...field, text: 'b', top: 0 }], /@3 .* is gone or moved/],
+    [['tap', '@3'], [{ ...field, text: 'a' }, { ...field, text: 'b', top: 0 }], /@3 .* is gone or changed its label/],
     [['tap', '@1', '--nth', '0'], [play], /--nth does not apply to refs/],
     [['tap', '@1', '--windows'], [play], /from `adrive look`; pass the same --windows/]]) {
     const result = run(args, screen(now))
     assert.match(result.stderr, error)
     assert.deepEqual(taps(result), [])
   }
+  // A resize around the same center is not a move.
+  assert.doesNotMatch(ok(run(['tap', '@1'], screen([{ ...play, left: 0, right: 200 }]))).stdout, /moved/)
+})
+
+test('a moved ref is not followed when another element could be the one tapped', () => {
+  const serial = `follow-${process.pid}`
+  const env = (windows) => ({ DUMP: JSON.stringify({ version: 1, windows }), SERIALNO: serial, ANDROID_SERIAL: '' })
+  const screen = (nodes) => env([window(nodes)])
+  const taps = (result) => result.calls.filter(isInput)
+  const fails = (args, before, now, error) => {
+    ok(run(['look', ...args.filter((a) => a === '--windows')], before))
+    const result = run(['tap', ...args], now)
+    assert.match(result.stderr, error)
+    assert.deepEqual(taps(result), [])
+  }
+  const play = (top) => node({ text: 'Play', top, bottom: top + 100, y: top + 50 })
+  fails(['@1'], screen([play(0), play(500)]), screen([play(900)]), /moved and the last look had others like it/)
+  const list = node({ class: 'android.widget.ListView', text: '', clickable: false, scrollable: true, left: 0, top: 0, right: 1000, bottom: 2000 })
+  fails(['@2'], screen([list, play(500)]), screen([list, play(900)]), /moved inside a scrolling list/)
+  const dialog = { ...window([play(900)], 2), package: 'com.example' }
+  fails(['--windows', '@1'], env([window([play(0)])]), env([dialog, window([])]), /is gone/)
 })
 
 test('actions print what changed once the screen settles, ignoring animating labels', () => {

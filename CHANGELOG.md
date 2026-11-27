@@ -7,6 +7,8 @@ release retitles it `## <version> — <date>`.
 
 ### Added
 
+- **Refs follow a moved element** (#46)
+  - `tap @N` and the other ref commands act at the element's new position when it moved but is still the only actionable element with the same class and label in its window, and say it moved. Elements inside scrolling lists are not followed.
 - **Actions print what changed** (#47)
   - `tap`, `longpress`, `slide`, `type`, `swipe`, `scroll` and `key` wait for the screen to settle, then print `appeared:`, `gone:` and `changed:` lines; `--json` prints them as data and `--quiet` skips them.
   - `left <app> -> <other>` says the action took you out of the app.
