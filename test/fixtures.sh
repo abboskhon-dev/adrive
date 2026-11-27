@@ -26,6 +26,9 @@ for dir in fixture compose flutter react-native; do
   [ "$t1" != "$t2" ] || { echo "$dir: the timer is stuck at $t1"; exit 1; }
   $A tap 'Mute Bass' --quiet
   $A wait 'taps 1' 5
+  $A tap Note --quiet
+  $A type --quiet -- 'Größe 日本 👍'
+  $A ui | grep -q 'Größe 日本 👍' || { echo "$dir: type did not set the Note field"; $A ui; exit 1; }
   adb shell am force-stop "$pkg"
   ran=$((ran + 1))
 done

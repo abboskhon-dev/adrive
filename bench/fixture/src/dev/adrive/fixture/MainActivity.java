@@ -2,10 +2,12 @@ package dev.adrive.fixture;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.text.InputType;
 import android.os.SystemClock;
 import android.view.Choreographer;
 import android.view.Gravity;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -44,6 +46,11 @@ public class MainActivity extends Activity implements Choreographer.FrameCallbac
     taps = new TextView(this);
     taps.setText("taps 0");
     root.addView(taps);
+
+    EditText note = new EditText(this);
+    note.setHint("Note");
+    note.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+    root.addView(note, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
     // Enough labelled nodes that reading the tree costs something.
     LinearLayout grid = new LinearLayout(this);

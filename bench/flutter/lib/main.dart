@@ -39,6 +39,7 @@ class _PlayerState extends State<Player> with SingleTickerProviderStateMixin {
           LinearProgressIndicator(value: ms % 10000 / 10000),
           ElevatedButton(onPressed: () => setState(() => _taps++), child: const Text('Mute Bass')),
           Text('taps $_taps'),
+          const TextField(decoration: InputDecoration(hintText: 'Note')),
           Expanded(
             child: ListView.builder(
               itemCount: 40,

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native'
+import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 
 const ROWS = Array.from({ length: 40 }, (_, i) => `Stem ${i}`)
 const pad = (n: number, w: number) => String(n).padStart(w, '0')
@@ -8,6 +8,7 @@ const pad = (n: number, w: number) => String(n).padStart(w, '0')
 export default function App() {
   const [ms, setMs] = useState(0)
   const [taps, setTaps] = useState(0)
+  const [note, setNote] = useState('')
   useEffect(() => {
     const start = Date.now()
     let id = requestAnimationFrame(function frame() {
@@ -24,6 +25,7 @@ export default function App() {
         <Text style={styles.label}>Mute Bass</Text>
       </Pressable>
       <Text>{`taps ${taps}`}</Text>
+      <TextInput style={styles.note} placeholder="Note" value={note} onChangeText={setNote} />
       <FlatList data={ROWS} keyExtractor={r => r} renderItem={({ item }) => <Text style={styles.row}>{item}</Text>} />
     </View>
   )
@@ -37,4 +39,5 @@ const styles = StyleSheet.create({
   button: { backgroundColor: '#3367d6', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, margin: 8 },
   label: { color: '#fff' },
   row: { fontSize: 9 },
+  note: { alignSelf: 'stretch', borderWidth: 1, borderColor: '#ccc' },
 })

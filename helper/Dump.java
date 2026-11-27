@@ -3,12 +3,14 @@ import android.app.UiAutomation;
 import android.graphics.Rect;
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
+import android.os.Bundle;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
+import android.util.Base64;
 import android.view.MotionEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
@@ -26,7 +28,7 @@ import org.json.JSONObject;
 public class Dump {
   static final String SOCKET = "adrive";
   // Bump with any change to the request or reply lines; adrive.mjs sends the same number.
-  static final int PROTOCOL = 2;
+  static final int PROTOCOL = 3;
   static HandlerThread thread;
   static UiAutomation ua;
   static boolean connected;
@@ -43,6 +45,14 @@ public class Dump {
       if (Looper.getMainLooper() == null) Looper.prepareMainLooper();
       if (flags.contains("--serve")) {
         serve(args[1], Long.parseLong(args[2]) * 1000);
+      } else if (flags.contains("--set-text")) {
+        connect();
+        String text = args[1].equals("-") ? "" : new String(Base64.decode(args[1], Base64.DEFAULT), "UTF-8");
+        try {
+          System.out.println(setText(text, flags.contains("--append")));
+        } catch (IllegalArgumentException e) {
+          System.out.println(new JSONObject().put("error", e.getMessage()));
+        }
       } else {
         connect();
         System.out.println(snapshot(flags.contains("--all"), flags.contains("--windows")));
@@ -138,7 +148,7 @@ public class Dump {
             reply = null;
           } else {
             // Past this line the CLI must not resend: the input may already have happened.
-            if (cmd.equals("tap") || cmd.equals("swipe") || cmd.equals("key")) write(client, new JSONObject().put("accepted", true).toString());
+            if (cmd.equals("tap") || cmd.equals("swipe") || cmd.equals("key") || cmd.equals("text")) write(client, new JSONObject().put("accepted", true).toString());
             try {
               if (cmd.equals("dump")) reply = snapshot(request.optBoolean("all"), request.optBoolean("windows"));
               else reply = input(cmd, request);
@@ -211,9 +221,59 @@ public class Dump {
         } catch (Refused e) { throw new Partial(); }
         break;
       }
+      case "text": return setText(r.getString("text"), r.optBoolean("append"));
       default: throw new IllegalArgumentException("unknown command " + cmd);
     }
     return new JSONObject().put("ok", true).toString();
+  }
+
+  // SET_TEXT needs no IME, so any Unicode works.
+  static String setText(String text, boolean append) throws Exception {
+    AccessibilityNodeInfo field = null;
+    // A freshly connected helper can see no root or focus for a moment.
+    for (int i = 0; field == null && i < 20; i++) {
+      if (i > 0) Thread.sleep(100);
+      clearCache();
+      AccessibilityNodeInfo root = ua.getRootInActiveWindow();
+      if (root == null) continue;
+      field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+      if (field != null && !field.isEditable()) { field.recycle(); field = null; }
+      if (field == null) field = focusedEditable(root);
+      root.recycle();
+    }
+    if (field == null) throw new IllegalArgumentException("no focused text field; tap one first");
+    try {
+      if (!field.isEditable()) throw new IllegalArgumentException("no focused text field; tap one first");
+      if (append && field.isPassword()) throw new IllegalArgumentException("--append can't read a password field; type the whole password");
+      String value = (append && !field.isShowingHintText() ? str(field.getText()) : "") + text;
+      Bundle set = new Bundle();
+      set.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
+      if (!field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, set)) throw new IllegalArgumentException("the field refused the text; try type --keys");
+      Bundle end = new Bundle();
+      end.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, value.length());
+      end.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, value.length());
+      field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, end);
+      // Compose, React Native and Flutter apply the text a frame or more later.
+      for (long until = SystemClock.uptimeMillis() + 1000; ; Thread.sleep(50)) {
+        field.refresh();
+        if (field.isPassword() || (field.isShowingHintText() ? "" : str(field.getText())).equals(value) || SystemClock.uptimeMillis() > until) break;
+      }
+      return new JSONObject().put("ok", true).put("value", value).put("password", field.isPassword())
+          .put("text", field.isShowingHintText() ? "" : str(field.getText())).toString();
+    } finally { field.recycle(); }
+  }
+
+  // In Compose, findFocus returns the host view, not the focused field.
+  static AccessibilityNodeInfo focusedEditable(AccessibilityNodeInfo node) {
+    for (int i = 0; i < node.getChildCount(); i++) {
+      AccessibilityNodeInfo child = node.getChild(i);
+      if (child == null) continue;
+      if (child.isEditable() && child.isFocused()) return child;
+      AccessibilityNodeInfo found = focusedEditable(child);
+      child.recycle();
+      if (found != null) return found;
+    }
+    return null;
   }
 
   // Moves every 10 ms, like `input swipe`; a zero duration is a tap.
