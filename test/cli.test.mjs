@@ -22,6 +22,12 @@ const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CALLS, JSON.stringify(args)+'\\n');
 const cmd = args[1] || '';
 if (cmd.includes('--serve')) process.stdout.write(process.env.SERVE_PID || '');
+else if (cmd.includes('app_process') && process.env.BUSY) {
+  if (process.env.BUSY === 'stdout') { process.stdout.write('adrive helper failed: UiAutomationService x already registered!'); process.exit(0); }
+  process.stderr.write('adrive helper failed (Android 15): java.lang.IllegalStateException: UiAutomationService x already registered!');
+  process.exit(2);
+}
+else if (cmd.startsWith('ps -A')) process.stdout.write(process.env.PS || '');
 else if (cmd.includes('app_process')) {
   const n = Number(fs.existsSync(process.env.CALLS + '.d') ? fs.readFileSync(process.env.CALLS + '.d', 'utf8') : 0);
   fs.writeFileSync(process.env.CALLS + '.d', String(n + 1));
@@ -89,7 +95,7 @@ async function fakeDaemon(...replies) {
       if (!data.endsWith('\n')) return
       requests.push(JSON.parse(data))
       const reply = replies.length > 1 ? replies.shift() : replies[0]
-      socket.end(reply === null ? '' : `${JSON.stringify(reply)}\n`)
+      socket.end(reply === null ? '' : typeof reply === 'string' ? reply : `${JSON.stringify(reply)}\n`)
     })
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -209,7 +215,7 @@ test('a running daemon answers without starting the helper', async () => {
     const ui = await runWithDaemon(['ui', '--json', '--all', '--windows'], daemon.port)
     assert.equal(ui.status, 0, ui.stderr)
     assert.deepEqual(JSON.parse(ui.stdout), data)
-    assert.deepEqual(daemon.requests, [{ hash: fixtureHash, all: true, windows: true }])
+    assert.deepEqual(daemon.requests, [{ hash: fixtureHash, protocol: 2, all: true, windows: true }])
     assert.deepEqual(ui.calls, [['forward', '--list']])
   } finally { await daemon.close() }
 })
@@ -219,7 +225,7 @@ test('actions go through the daemon, and fall back to input when it cannot injec
   try {
     const tap = await runWithDaemon(['tap', '--quiet', 'From daemon'], daemon.port)
     assert.equal(tap.status, 0, tap.stderr)
-    assert.deepEqual(daemon.requests[1], { hash: fixtureHash, cmd: 'tap', x: 7, y: 200 })
+    assert.deepEqual(daemon.requests[1], { hash: fixtureHash, protocol: 2, cmd: 'tap', x: 7, y: 200 })
     assert.ok(!tap.calls.some((c) => c[1]?.startsWith("'input'")))
     const fallback = await runWithDaemon(['tap', '--quiet', 'From daemon'], daemon.port)
     assert.deepEqual(fallback.calls.filter(isInput).at(-1), shellCommand('input', 'tap', 7, 200))
@@ -322,6 +328,36 @@ test('a helper that loses its connection exits, and the command reruns once', as
     assert.equal(result.status, 0, result.stderr)
     assert.match(helperCalls(result.calls).at(-1)[1], /Dump$/)
   } finally { await daemon.close() }
+})
+test('an input the helper accepted is never sent again, even if the helper dies before answering', async () => {
+  const data = { version: 1, windows: [window([node({ text: 'Play', x: 7 })])] }
+  const daemon = await fakeDaemon(data, '{"accepted":true}\n')
+  try {
+    const result = await runWithDaemon(['tap', '--quiet', 'Play'], daemon.port)
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /helper stopped during tap, which may have happened; check the screen/)
+    assert.equal(daemon.requests.filter((r) => r.cmd === 'tap').length, 1)
+    assert.deepEqual(result.calls.filter(isInput), [])
+  } finally { await daemon.close() }
+  const dead = await fakeDaemon(data, '{"accepted":true}\n{"error":"DeadObjectException","restart":true}\n')
+  try {
+    const result = await runWithDaemon(['longpress', '--quiet', 'Play'], dead.port)
+    assert.match(result.stderr, /helper stopped during longpress/)
+    assert.deepEqual(result.calls.filter(isInput), [])
+  } finally { await dead.close() }
+  const done = await fakeDaemon(data, '{"accepted":true}\n{"ok":true}\n')
+  try {
+    assert.equal((await runWithDaemon(['tap', '--quiet', 'Play'], done.port)).status, 0)
+  } finally { await done.close() }
+})
+test('a busy UiAutomation names the client that holds it', () => {
+  const busy = (ps) => run(['ui'], { BUSY: '1', PS: ps })
+  assert.match(busy('  PID ARGS\n 4242 uiautomator dump\n 5000 ps -A -w -o PID,ARGS\n').stderr, /holds the device: uiautomator \(pid 4242\); stop it, or run adb shell kill 4242, and retry/)
+  assert.match(busy(' 77 app_process /system/bin Dump --serve abc 30\n').stderr, /another adrive helper \(pid 77\)/)
+  assert.match(busy(' 9 app_process /system/bin com.android.commands.am.Am instrument -w io.appium.uiautomator2.server.test/x\n').stderr, /Appium \(pid 9\)/)
+  assert.match(busy(' 8 app_process /system/bin com.android.commands.am.Am instrument -w com.example.test/x\n').stderr, /an instrumentation test \(pid 8\)/)
+  assert.match(busy(' 7 com.example.instrumentpanel\n 6 com.example.Dump\n').stderr, /another UI automation client holds the device \(uiautomator, Appium/)
+  assert.match(run(['ui'], { BUSY: 'stdout', PS: ' 4242 uiautomator events\n' }).stderr, /uiautomator \(pid 4242\)/)
 })
 test('a starting helper is waited on until it answers or exits', async () => {
   const daemon = await fakeDaemon(null)

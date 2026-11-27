@@ -12,6 +12,8 @@ const localDex = join(here, 'helper/build/classes.dex')
 const remoteDex = '/data/local/tmp/adrive.dex'
 const helperRun = `ANDROID_DATA=/data/local/tmp CLASSPATH=${remoteDex} app_process /system/bin Dump`
 const helperSocket = 'localabstract:adrive'
+// Matches PROTOCOL in helper/Dump.java.
+const PROTOCOL = 2
 
 const USAGE = `adrive: drive any Android app (release builds too) over adb. Device: ANDROID_SERIAL.
 
@@ -98,6 +100,19 @@ function helperHash() {
   try { bytes = readFileSync(localDex) } catch { throw new Error('helper missing: run ./build.sh first') }
   return createHash('md5').update(bytes).digest('hex')
 }
+const HOLDERS = [[/\bapp_process\b.*\bDump\b/, 'another adrive helper'], [/\bio\.appium\.uiautomator2\b/, 'Appium'],
+  [/\bdev\.mobile\.maestro\b/, 'Maestro'], [/(?:^|[\s/])uiautomator(?:\s|$)|\bcommands\.uiautomator\b/, 'uiautomator'],
+  [/(?:^|[\s/.])(?:am|Am)\s+instrument\b/, 'an instrumentation test']]
+// Android allows one UiAutomation client at a time.
+function automationBusy() {
+  let ps = ''
+  try { ps = sh('ps -A -w -o PID,ARGS; true') } catch {}
+  for (const [pattern, name] of HOLDERS) {
+    const pid = ps.split('\n').find((l) => pattern.test(l))?.trim().split(/\s+/)[0]
+    if (pid) return `another UI automation client holds the device: ${name} (pid ${pid}); stop it, or run adb shell kill ${pid}, and retry`
+  }
+  return 'another UI automation client holds the device (uiautomator, Appium, Maestro or a test); stop it and retry'
+}
 function ensureHelper(hash = helperHash()) {
   const remote = sh(`md5sum ${remoteDex} 2>/dev/null; true`).split(' ')[0]
   if (remote !== hash) adb(['push', localDex, remoteDex])
@@ -116,6 +131,7 @@ function forwardedPort(create = true) {
   return Number.isInteger(port) && port > 0 ? port : null
 }
 // Resolves null when nothing answers: adb closes the forward if the helper is not listening.
+// An input the helper accepted but never finished resolves { lost: true }.
 function ask(port, request, timeout = 15000) {
   return new Promise((resolve) => {
     let data = ''
@@ -125,9 +141,15 @@ function ask(port, request, timeout = 15000) {
     socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`))
     socket.on('data', (chunk) => { data += chunk })
     socket.on('error', () => {})
-    socket.on('close', () => { try { resolve(JSON.parse(data)) } catch { resolve(null) } })
+    socket.on('close', () => {
+      const lines = data.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } })
+      const reply = lines.filter((l) => !l?.accepted).at(-1)
+      resolve(lines.some((l) => l?.accepted) && (!reply || reply.restart) ? { lost: true } : reply ?? null)
+    })
   })
 }
+// The command the user ran, since longpress, slide and scroll reach the helper as swipes.
+let acting
 async function daemonAsk(fields) {
   if (process.env.ADRIVE_NO_DAEMON === '1') return null
   const idle = number(process.env.ADRIVE_DAEMON_IDLE ?? 30, 'ADRIVE_DAEMON_IDLE', 1)
@@ -135,10 +157,11 @@ async function daemonAsk(fields) {
   try {
     const port = forwardedPort()
     if (!port) return null
-    const request = { hash, ...fields }
-    // A timed-out swipe would be sent again through the fallback.
+    const request = { hash, protocol: PROTOCOL, ...fields }
     const timeout = 15000 + (fields.ms ?? 0) + (fields.timeoutMs ?? 0)
+    const lost = () => Object.assign(new Error(`the adrive helper stopped during ${acting ?? fields.cmd}, which may have happened; check the screen before retrying`), { fatal: true })
     let reply = await ask(port, request, timeout)
+    if (reply?.lost) throw lost()
     if (!reply || reply.error === 'stale') {
       ensureHelper(hash)
       const pid = +sh(`${helperRun} --serve ${hash} ${idle} >/dev/null 2>&1 & echo $!`).trim()
@@ -147,6 +170,7 @@ async function daemonAsk(fields) {
       for (let i = 1; !reply; i++) {
         await sleep(100)
         reply = await ask(port, request, timeout)
+        if (reply?.lost) throw lost()
         if (reply) break
         if (i % 5 === 0 && pid > 0 && !sh(`kill -0 ${pid} 2>/dev/null && echo up; true`).includes('up')) return null
         if (i === 150) throw Object.assign(new Error('adrive helper did not start within 15 s; run adrive daemon stop'), { fatal: true })
@@ -167,7 +191,13 @@ async function dump(all = false, windows = false) {
   lastSeq = result?.seq
   if (!result) {
     ensureHelper()
-    const out = sh(`${helperRun}${all ? ' --all' : ''}${windows ? ' --windows' : ''}`)
+    let out
+    try { out = sh(`${helperRun}${all ? ' --all' : ''}${windows ? ' --windows' : ''}`) } catch (e) {
+      if (/already registered/.test(e.message)) throw new Error(automationBusy())
+      throw e
+    }
+    // Without shell_v2, adb merges the helper's stderr into stdout and exits 0.
+    if (/already registered/.test(out)) throw new Error(automationBusy())
     try { result = JSON.parse(out) } catch { throw new Error('invalid helper JSON; rebuild with ./build.sh') }
   }
   if (result.version !== 1 || !Array.isArray(result.windows)) throw new Error('unsupported helper output; rebuild with ./build.sh')
@@ -694,6 +724,7 @@ async function main([cmd, ...raw]) {
     : cut >= 0 && lead.every((a) => Object.hasOwn(allowed, a)) ? { args: raw.slice(cut + 1), flags: options(lead, allowed).flags }
     : { args: raw, flags: {} }
   if (ACTIONS.has(cmd)) {
+    acting = cmd
     if (flags['--quiet'] && flags['--json']) throw new Error('--quiet and --json cannot be combined')
     if (flags['--quiet'] || measuring) {
       const line = await act(cmd, args, nthFlag(flags), !!flags['--windows'])
