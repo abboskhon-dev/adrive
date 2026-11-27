@@ -7,6 +7,9 @@ release retitles it `## <version> — <date>`.
 
 ### Added
 
+- **Actions print what changed** (#47)
+  - `tap`, `longpress`, `slide`, `type`, `swipe`, `scroll` and `key` wait for the screen to settle, then print `appeared:`, `gone:` and `changed:` lines; `--json` prints them as data and `--quiet` skips them.
+  - `left <app> -> <other>` says the action took you out of the app.
 - **Verifiable releases** (#32)
   - Releases are published from CI with npm provenance and a build attestation for the helper dex.
   - The helper dex rebuilds byte for byte; `adrive --version` prints its SHA-256.

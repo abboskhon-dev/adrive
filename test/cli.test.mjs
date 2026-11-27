@@ -576,7 +576,11 @@ test('actions print what changed once the screen settles, ignoring animating lab
   const many = { DUMP0: JSON.stringify({ version: 1, windows: [window(Array.from({ length: 12 }, (_, i) => node({ text: `Stem ${i}` })))] }),
     DUMP: JSON.stringify({ version: 1, windows: [{ ...window([]), package: 'com.launcher' }] }) }
   const back = ok(run(['key', 'back'], many)).stdout.split('\n')
-  assert.deepEqual([back[0], back[1], back.at(-2), back.length], ['screen: com.launcher', 'gone: Button "Stem 0"', 'gone: 2 more', 13])
+  assert.deepEqual([back[0], back[1], back.at(-2), back.length], ['left com.example -> com.launcher', 'gone: Button "Stem 0"', 'gone: 2 more', 13])
+  assert.deepEqual(JSON.parse(ok(run(['key', '--json', 'back'], many)).stdout).left, { from: 'com.example', to: 'com.launcher' })
+  const keyboard = { id: 9, type: 2, layer: 1, package: 'com.keyboard', nodes: [] }
+  const typing = { DUMP0: JSON.stringify({ version: 1, windows: [window([])] }), DUMP: JSON.stringify({ version: 1, windows: [keyboard, window([])] }) }
+  assert.doesNotMatch(ok(run(['tap', '--windows', '5,5'], typing)).stdout, /left/)
   assert.equal(ok(run(['key', '--quiet', 'back'])).stdout, '')
   assert.match(run(['key', '--quiet', '--json', 'back']).stderr, /cannot be combined/)
 })
