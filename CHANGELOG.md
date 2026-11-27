@@ -7,6 +7,10 @@ release retitles it `## <version> — <date>`.
 
 ### Added
 
+- **Clearer helper failures** (#27)
+  - When another client holds UiAutomation, adrive names it: uiautomator, Appium, Maestro, another adrive helper or an instrumentation test.
+  - An input the helper accepted is never sent twice: if the helper dies before answering, the command fails and says so.
+  - The helper and CLI check a protocol version as well as the dex hash.
 - **Refs follow a moved element** (#46)
   - `tap @N` and the other ref commands act at the element's new position when it moved but is still the only actionable element with the same class and label in its window, and say it moved. Elements inside scrolling lists are not followed.
 - **Actions print what changed** (#47)

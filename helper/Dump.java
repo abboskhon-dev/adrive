@@ -25,6 +25,8 @@ import org.json.JSONObject;
 // No waitForIdle: animations must not block hierarchy inspection.
 public class Dump {
   static final String SOCKET = "adrive";
+  // Bump with any change to the request or reply lines; adrive.mjs sends the same number.
+  static final int PROTOCOL = 2;
   static HandlerThread thread;
   static UiAutomation ua;
   static boolean connected;
@@ -126,7 +128,7 @@ public class Dump {
           } else if (cmd.equals("status")) {
             reply = new JSONObject().put("ok", true).put("pid", android.os.Process.myPid())
                 .put("idleSeconds", idleMs / 1000).toString();
-          } else if (!hash.equals(request.optString("hash"))) {
+          } else if (!hash.equals(request.optString("hash")) || request.optInt("protocol") != PROTOCOL) {
             disconnect();
             reply = new JSONObject().put("error", "stale").toString();
             exit = true;
@@ -135,6 +137,8 @@ public class Dump {
             lastRequest = Math.max(lastRequest, SystemClock.elapsedRealtime() + request.optLong("timeoutMs"));
             reply = null;
           } else {
+            // Past this line the CLI must not resend: the input may already have happened.
+            if (cmd.equals("tap") || cmd.equals("swipe") || cmd.equals("key")) write(client, new JSONObject().put("accepted", true).toString());
             try {
               if (cmd.equals("dump")) reply = snapshot(request.optBoolean("all"), request.optBoolean("windows"));
               else reply = input(cmd, request);
