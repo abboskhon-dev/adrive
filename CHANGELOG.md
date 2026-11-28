@@ -5,6 +5,11 @@ release retitles it `## <version> — <date>`.
 
 ## Unreleased
 
+### Fixed
+
+- **Flutter text fields show their hint** (#12)
+  - An empty Flutter field is listed and matched by its hint, as a native one is, so `tap Note` finds it.
+
 ### Added
 
 - **`type` takes any Unicode** (#30)
@@ -26,6 +31,10 @@ release retitles it `## <version> — <date>`.
   - `adrive skill install` adds a skill that teaches Claude Code the `look`, act, read-the-change loop from the shell.
 - **`ui --wait` and `look --wait`**
   - `--wait <query>` waits up to 10 s for an element to appear before reading the screen, so a read right after an action doesn't return the old screen. On a timeout it still lists the last screen.
+
+### Internal
+
+- CI runs the emulator checks on every API level from 26 to 37, weekly as well as on `main`, and writes a pass/fail table per API level to the run summary (#12).
 
 ## 0.1.0 — 2026-11-22
 

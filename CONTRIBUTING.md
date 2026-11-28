@@ -39,7 +39,7 @@ the issue first saves a rewrite in review.
 - Fill in the PR template: summary, evidence, merge danger.
 - Open the PR as a draft.
 - CI runs only on `main`, so run the checks locally before every push: `npm test`, `./build.sh`
-  if `helper/` or `build.sh` changed, and `test/smoke.sh` on a device or emulator for device changes.
+  if `helper/` or `build.sh` changed, and `test/smoke.sh` on a device or emulator for device changes (it also runs the fixtures you have built).
 - Squash-merge with the PR title as the commit subject, so it ends in `(#N)`.
 - Add an entry to `CHANGELOG.md` under `Unreleased`: a bold headline with the PR number, details
   as sub-bullets; build and test changes go under `Internal`.
