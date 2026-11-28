@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -90,9 +93,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api: [26, 29, 33, 35, 36]
+        api: [26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, '37.0']
+        include:
+          # No google_apis x86_64 image for API 27.
+          - api: 27
+            target: default
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir compat && touch compat/compat.tsv
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -113,8 +121,25 @@ jobs:
       - uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api }}
-          target: google_apis
+          target: ${{ matrix.target || 'google_apis' }}
           arch: x86_64
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          script: ./test/smoke.sh && ./test/fixtures.sh
+          script: ADRIVE_REQUIRE_FIXTURES=1 ./test/smoke.sh compat/compat.tsv
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-${{ matrix.api }}
+          path: compat/compat.tsv
+
+  compatibility:
+    needs: emulator
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: compat-*
+          path: compat
+      - run: node test/compat-table.mjs compat | tee -a "$GITHUB_STEP_SUMMARY"

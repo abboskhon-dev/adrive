@@ -379,6 +379,8 @@ public class Dump {
     if (node == null) return;
     try {
       String text = str(node.getText());
+      // Views report an empty field's hint as its text; Flutter only sets hintText.
+      if (text.isEmpty() && node.isEditable()) text = str(node.getHintText());
       String desc = str(node.getContentDescription());
       String id = str(node.getViewIdResourceName());
       boolean actionable = node.isClickable() || node.isLongClickable() || node.isScrollable()
