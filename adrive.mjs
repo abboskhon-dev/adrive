@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
+import { request as httpRequest } from 'node:http'
 import { mkdirSync, readFileSync, writeFileSync, realpathSync, statSync } from 'node:fs'
 import { connect } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
@@ -49,6 +50,8 @@ const USAGE = `adrive: drive any Android app (release builds too) over adb. Devi
   run <steps.json|-> [--package pkg] [--trace out.perfetto-trace] [--json]
                                  run steps like [["tap","Play"],{"do":["wait","Ready"],"settle":1}]; frames, CPU, PSS per step
   open <url>                     open a deep link
+  reload [--package pkg] [--port N]  reload a React Native debug app's JS through Metro (default port 8081),
+                                 else through its dev menu; waits for the JS to restart
   clear <pkg>                    wipe app data (signs out)
   daemon status|stop             the helper stays up 30 s after a command; stop frees the device for other tools
   mcp                            run as an MCP server over stdio
@@ -346,7 +349,7 @@ async function waitFor(query, seconds, present, windows, all = false) {
 }
 
 const SETTLE_MS = 2000, QUIET_MS = 300
-const ACTIONS = new Set(['tap', 'longpress', 'slide', 'type', 'swipe', 'scroll', 'key'])
+const ACTIONS = new Set(['tap', 'longpress', 'slide', 'type', 'swipe', 'scroll', 'key', 'reload'])
 const box = (n) => [n.class, n.id, n.left, n.top, n.right, n.bottom].join('|')
 const nodeKey = (n) => `${box(n)}|${n.text}|${n.desc}|${!!n.checked}|${!!n.selected}`
 const nodesOf = (data) => data.windows.flatMap((w) => w.nodes)
@@ -438,6 +441,58 @@ function foreground() {
   return `${packageName(focus[1])}/${focus[2]}`
 }
 const pkgArg = (arg) => packageName(arg ?? foreground().split('/')[0])
+
+// Node 18 has no WebSocket client; one small masked text frame is all Metro needs.
+function wsFrame(text) {
+  const data = Buffer.from(text), mask = randomBytes(4)
+  return Buffer.concat([Buffer.from([0x81, 0x80 | data.length]), mask, data.map((b, i) => b ^ mask[i % 4])])
+}
+// Metro relays a broadcast on its /message socket to every app connected to it.
+function metroReload(port) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: 'localhost', port, path: '/message', timeout: 2000,
+      headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': randomBytes(16).toString('base64') } })
+    req.on('upgrade', (_res, socket) => {
+      socket.on('error', () => {})
+      socket.end(wsFrame('{"version":2,"method":"reload"}'), resolve)
+      setTimeout(() => socket.destroy(), 1000).unref()
+    })
+    req.on('response', (res) => { res.resume(); reject(new Error(`no Metro message socket on port ${port} (HTTP ${res.statusCode})`)) })
+    req.on('timeout', () => req.destroy(new Error(`Metro did not answer on port ${port}`)))
+    req.on('error', (e) => reject(new Error(`no Metro on port ${port} (${e.code ?? e.message})`)))
+    req.end()
+  })
+}
+// React Native logs this line each time its JS starts.
+function jsStarts(pid) {
+  return (sh(`logcat -d -v brief --pid=${pid} -s ReactNativeJS:I; true`).match(/Running "/g) ?? []).length
+}
+async function restarted(pid, before, ms) {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(250)) if (jsStarts(pid) > before) return true
+  return false
+}
+// Metro first; the dev menu when Metro is unreachable or the app ignores it.
+async function reload(pkg, port) {
+  const pid = sh(`pidof ${quote(pkg)}; true`).trim().split(/\s+/)[0]
+  if (!/^\d+$/.test(pid)) throw new Error(`${pkg} is not running`)
+  let before = jsStarts(pid), why
+  try {
+    await metroReload(port)
+    if (await restarted(pid, before, 5000)) return `reloaded ${pkg} through Metro on port ${port}`
+    why = `${pkg} did not reload through Metro on port ${port}`
+  } catch (e) { why = e.message }
+  if (foreground().split('/')[0] !== pkg) throw new Error(`${why}; bring ${pkg} to the foreground to reload it through its dev menu`)
+  before = jsStarts(pid)
+  await inject({ cmd: 'key', key: '82' }, 'keyevent', 82)
+  // An item only React Native's dev menu has, so another app's "Reload" is never tapped.
+  try { await waitFor('Change Bundle Location', 3, true, false) } catch {
+    throw new Error(`${why}, and the menu key opened no React Native dev menu; is this a debug build?`)
+  }
+  const p = await point('Reload', undefined, false)
+  await inject({ cmd: 'tap', x: p.x, y: p.y }, 'tap', p.x, p.y)
+  if (!await restarted(pid, before, 10000)) throw new Error(`tapped Reload in the dev menu, but ${pkg} did not restart its JS within 10 s`)
+  return `reloaded ${pkg} through the dev menu (${why})`
+}
 
 function pid(pkg) {
   const p = sh(`pidof ${quote(pkg)}; true`).trim().split(/\s+/)[0]
@@ -729,6 +784,13 @@ async function act(cmd, args, flags, windows, ready = async () => {}) {
       await inject({ cmd: 'key', key: String(key) }, 'keyevent', key)
       return null
     }
+    case 'reload': {
+      arity(args, 0, 0, 'reload [--package pkg] [--port N]')
+      const port = number(flags['--port'] ?? 8081, '--port', 1)
+      const pkg = pkgArg(flags['--package'])
+      await ready()
+      return reload(pkg, port)
+    }
   }
 }
 
@@ -745,6 +807,7 @@ async function main([cmd, ...raw]) {
   if (cmd === 'run') Object.assign(allowed, { '--package': true, '--trace': true, '--json': false })
   if (ACTIONS.has(cmd)) Object.assign(allowed, { '--quiet': false, '--json': false })
   if (cmd === 'type') Object.assign(allowed, { '--append': false, '--keys': false })
+  if (cmd === 'reload') Object.assign(allowed, { '--package': true, '--port': true })
   // Text is literal, including --nth; options go before an explicit --.
   const cut = raw.indexOf('--'), lead = raw.slice(0, Math.max(cut, 0))
   const { args, flags } = cmd !== 'type' ? options(raw, allowed)
@@ -765,7 +828,8 @@ async function main([cmd, ...raw]) {
       before = recent?.windows === windows ? recent.data : await dump(false, windows)
       start = Date.now()
     })
-    const d = screenDiff(before, await settle(windows, start))
+    // A reload returns once the JS restarted; the new screen renders after that.
+    const d = screenDiff(before, await settle(windows, cmd === 'reload' ? Date.now() : start))
     if (flags['--json']) return console.log(JSON.stringify({ ...(line && { done: line }), ...d }))
     if (line) console.log(line)
     return console.log(formatDiff(d))

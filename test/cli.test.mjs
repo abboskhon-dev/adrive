@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
+import { createServer as createHttpServer } from 'node:http'
 import { createHash } from 'node:crypto'
 import { quote } from '../adrive.mjs'
 
@@ -47,6 +48,11 @@ else if (args[0] === 'pull') fs.writeFileSync(args[2], process.env.PULL ?? 'trac
 else if (args[0] === 'forward' && args[1] === '--list') process.stdout.write(process.env.FORWARD || '');
 else if (cmd.includes('md5sum')) process.stdout.write('f16d05ec6b29228d2c61adb1e9263f78  file');
 else if (cmd === "'dumpsys' 'window'") process.stdout.write(process.env.FOCUS);
+else if (cmd.startsWith('logcat -d -v brief')) {
+  const n = Number(fs.existsSync(process.env.CALLS + '.js') ? fs.readFileSync(process.env.CALLS + '.js', 'utf8') : 0);
+  fs.writeFileSync(process.env.CALLS + '.js', String(n + 1));
+  process.stdout.write(process.env['JSLOG' + n] ?? process.env.JSLOG ?? '');
+}
 else if (cmd.startsWith('pidof ')) process.stdout.write('1234');
 else if (cmd === 'dumpsys window displays') process.stdout.write(process.env.DISPLAYS || '');
 else if (cmd === 'wm size') process.stdout.write(process.env.WM_SIZE || '');
@@ -71,6 +77,7 @@ function run(args, extra = {}) {
   rmSync(`${callsFile}.n`, { force: true })
   rmSync(`${callsFile}.d`, { force: true })
   rmSync(`${callsFile}.alive`, { force: true })
+  rmSync(`${callsFile}.js`, { force: true })
   const result = spawnSync(process.execPath, [join(dir, 'adrive.mjs'), ...args], {
     encoding: 'utf8', timeout: 5000, env: environment(extra) })
   return { ...result, calls: recorded() }
@@ -722,4 +729,47 @@ test('a change that lands after the first settle read is still reported', async 
     assert.equal(tap.status, 0, tap.stderr)
     assert.match(tap.stdout, /\nchanged: Switch "Mute" unchecked -> checked\n$/)
   } finally { await daemon.close() }
+})
+
+const started = (n) => 'I/ReactNativeJS( 1234): Running "App" with {}\n'.repeat(n)
+test('reload sends Metro a reload and waits for the JS to restart', async () => {
+  const frames = [], sockets = []
+  const metro = createHttpServer()
+  metro.on('upgrade', (_req, socket) => {
+    sockets.push(socket)
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
+    socket.on('data', (b) => frames.push(Buffer.from(b.subarray(6).map((x, i) => x ^ b[2 + i % 4])).toString()))
+  })
+  await new Promise((resolve) => metro.listen(0, resolve))
+  try {
+    writeFileSync(callsFile, '')
+    rmSync(`${callsFile}.js`, { force: true })
+    const child = spawn(process.execPath, [join(dir, 'adrive.mjs'), 'reload', '--quiet', '--port', String(metro.address().port)],
+      { env: environment({ JSLOG0: started(1), JSLOG: started(2) }) })
+    let stdout = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    const status = await new Promise((resolve) => child.on('close', resolve))
+    assert.equal(status, 0)
+    assert.equal(stdout.trim(), `reloaded com.example through Metro on port ${metro.address().port}`)
+    assert.deepEqual(frames.map(JSON.parse), [{ version: 2, method: 'reload' }])
+    assert.ok(!recorded().some(isInput))
+  } finally { sockets.forEach((s) => s.destroy()); await new Promise((resolve) => metro.close(resolve)) }
+})
+
+test('reload falls back to the dev menu, only in the app and only in React Native\'s menu', () => {
+  const menu = JSON.stringify({ version: 1, windows: [window([node({ text: 'Reload', x: 10, y: 20 }), node({ text: 'Change Bundle Location', y: 90 })])] })
+  const r = ok(run(['reload', '--quiet', '--port', '1'], { DUMP: menu, JSLOG0: started(1), JSLOG1: started(1), JSLOG: started(2) }))
+  assert.match(r.stdout, /^reloaded com\.example through the dev menu \(no Metro on port 1 /)
+  assert.deepEqual(r.calls.filter(isInput), [shellCommand('input', 'keyevent', 82), shellCommand('input', 'tap', 10, 20)])
+
+  const other = run(['reload', '--quiet', '--port', '1', '--package', 'com.other'], { JSLOG: started(1) })
+  assert.equal(other.status, 1)
+  assert.match(other.stderr, /bring com\.other to the foreground/)
+  assert.ok(!other.calls.some(isInput))
+
+  const browser = JSON.stringify({ version: 1, windows: [window([node({ text: 'Reload' })])] })
+  const release = run(['reload', '--quiet', '--port', '1'], { DUMP: browser, JSLOG: started(1) })
+  assert.equal(release.status, 1)
+  assert.match(release.stderr, /opened no React Native dev menu/)
+  assert.deepEqual(release.calls.filter(isInput), [shellCommand('input', 'keyevent', 82)])
 })

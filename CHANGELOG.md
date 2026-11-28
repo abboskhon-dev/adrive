@@ -7,6 +7,8 @@ release retitles it `## <version> — <date>`.
 
 ### Added
 
+- **`reload` for React Native debug builds** (#43)
+  - Reloads the JS through Metro, or through the dev menu when Metro can't, waits for it to restart and prints what changed.
 - **`type` takes any Unicode** (#30)
   - `type` sets the focused field's text through accessibility, so accents, CJK, emoji and newlines work, and checks the field shows it.
   - It now replaces the field's text; `--append` adds to it, and `--keys` keeps the old key-event typing for printable ASCII.

@@ -23,7 +23,7 @@ A ref follows its element if it moved (the line says `moved from`), and fails wi
 
 ## Diagnosing
 
-- `adrive launch <package>`, `adrive stop <package>`, `adrive current`, `adrive open <url>`.
+- `adrive launch <package>`, `adrive stop <package>`, `adrive current`, `adrive open <url>`, `adrive reload` (React Native debug JS).
 - `adrive log-clear`, do the action, then `adrive log` for the app's logcat; `adrive crash` for the last crash or ANR.
 - `adrive perf --reset`, do the action, then `adrive perf` for CPU by thread, memory and jank.
 - `adrive run steps.json` measures a scripted flow step by step.
