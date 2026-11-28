@@ -110,6 +110,11 @@ const TOOLS = {
     props: { url: str('URL') }, required: ['url'],
     argv: (a) => ['open', a.url],
   },
+  reload: {
+    description: 'Reload a React Native debug app\'s JS through Metro, else through its dev menu, and report what changed.',
+    props: { package: pkg, port: num('Metro port (default 8081)') },
+    argv: (a) => ['reload', ...opt(a.package, '--package'), ...opt(a.port, '--port')],
+  },
   log: {
     description: 'Recent logcat lines from the app\'s current main process.',
     props: { pattern: str('Case-insensitive regex filter'), package: pkg, lines: num('Max lines (default 200)') },

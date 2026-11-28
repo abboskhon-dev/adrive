@@ -63,6 +63,7 @@ adrive launch com.example.app
 adrive stop com.example.app
 adrive current
 adrive open 'example://track?id=1&autoplay=true'
+adrive reload # React Native debug build: reload the JS through Metro, else the dev menu
 adrive log 'foo.bar' --lines 50
 adrive log 'error|warning' --package com.example.app
 adrive crash --package com.example.app
@@ -77,6 +78,8 @@ adrive daemon stop
 ```
 
 Diagnostics default to the focused app. Packages are supplied only with `--package`; a dotted regex is always a regex. `crash` reports the last Java crash matching the exact package or a `package:subprocess`, plus current ANR/crashing state, not historical ANR traces or native tombstones. `log` filters the current main process PID; it does not aggregate subprocesses or logs from previous process instances. `perf` reports Android's available CPU, memory, and gfxinfo counters; gfxinfo does not measure every custom rendering pipeline. `audio` reads `dumpsys media.audio_flinger` for the app's current PIDs: live tracks, their output thread, and recently closed tracks that had underrun frames (from AudioFlinger's per-thread local log). Tracks from earlier process instances are not attributed.
+
+`reload` sends a reload through Metro's message socket on `localhost:8081` (`--port` to change it), which reloads every app connected to that Metro. If the app's JS has not restarted within 5 s, it opens the app's React Native dev menu with the menu key and taps "Reload"; that needs the app in the foreground. It waits until React Native logs that the JS is running again, then prints what changed on screen.
 
 `ui --wait <query>` and `look --wait <query>` wait up to 10 s for the element, then list the screen the wait saw; on a timeout they list the last screen and fail. Matching falls back to substring, so wait for text only the new screen has: `--wait Ready` also matches `Not ready`.
 
